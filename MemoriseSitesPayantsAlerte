@@ -1,0 +1,139 @@
+// ==UserScript==
+// @name         Domain Tracker
+// @namespace    http://tampermonkey.net/
+// @version      0.3
+// @description  Track domains and highlight links pointing to them
+// @author       You
+// @match        *://*/*
+// @grant        GM_getValue
+// @grant        GM_setValue
+// @grant        GM_addStyle
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Ajouter le style CSS pour le bouton et les liens trackés
+    GM_addStyle(`
+        #trackDomainBtn {
+            position: fixed;
+            top: 2px;
+            left: 2px;
+            z-index: 9999;
+            padding: 3px;
+            background-color: red;
+            color: white;
+            border: none;
+            border-radius: 20px;
+            cursor: pointer;
+            width: 50px;
+            font-size: 10px;
+        }
+        .tracked-domain-container {
+            border: 2px solid red !important;
+            padding: 5px;
+            margin: 5px 0;
+            border-radius: 4px;
+        }
+    `);
+
+    // Fonction pour extraire le domaine principal
+    function getMainDomain(url) {
+        const domain = url.replace(/^(?:https?:\/\/)?(?:www\.)?([^\/]+).*$/, '$1');
+        const parts = domain.split('.');
+        if (parts.length > 2) {
+            return parts.slice(-2).join('.');
+        }
+        return domain;
+    }
+
+    // Fonction pour obtenir les domaines tracés
+    function getTrackedDomains() {
+        return GM_getValue('trackedDomains', []);
+    }
+
+    // Fonction pour sauvegarder les domaines
+    function saveTrackedDomains(domains) {
+        GM_setValue('trackedDomains', domains);
+    }
+
+    // Fonction pour tracker le domaine actuel
+    function trackDomain() {
+        const currentDomain = getMainDomain(window.location.hostname);
+        let trackedDomains = getTrackedDomains();
+
+        if (!trackedDomains.includes(currentDomain)) {
+            trackedDomains.push(currentDomain);
+            saveTrackedDomains(trackedDomains);
+            alert(`Le domaine "${currentDomain}" est enregistré !`);
+        } else {
+            alert(`Le domaine "${currentDomain}" est déjà enregistré !`);
+        }
+    }
+
+    // Fonction pour trouver le conteneur parent approprié
+    function findParentContainer(element) {
+        // Liste des sélecteurs de conteneurs courants
+        const containerSelectors = ['article', '.result', '.item', '.search-result', 'li', '.card'];
+
+        // Remonter jusqu'à 3 niveaux pour trouver un conteneur approprié
+        let current = element;
+        for (let i = 0; i < 3; i++) {
+            if (!current.parentElement) break;
+            current = current.parentElement;
+
+            // Vérifier si l'élément correspond à un des sélecteurs courants
+            if (containerSelectors.some(selector =>
+                current.matches(selector) ||
+                current.classList.length > 0)) {
+                return current;
+            }
+        }
+
+        // Si aucun conteneur approprié n'est trouvé, retourner le parent immédiat
+        return element.parentElement || element;
+    }
+
+    // Fonction pour vérifier et marquer les liens
+    function checkAndMarkLinks() {
+        const trackedDomains = getTrackedDomains();
+        const links = document.getElementsByTagName('a');
+
+        for (let link of links) {
+            if (link.href) {
+                const linkDomain = getMainDomain(link.href);
+                if (trackedDomains.includes(linkDomain)) {
+                    // Trouver le conteneur parent approprié
+                    const container = findParentContainer(link);
+
+                    // Ajouter la classe au conteneur s'il n'est pas déjà marqué
+                    if (!container.classList.contains('tracked-domain-container')) {
+                        container.classList.add('tracked-domain-container');
+                    }
+                }
+            }
+        }
+    }
+
+    // Créer et ajouter le bouton
+    const button = document.createElement('button');
+    button.id = 'trackDomainBtn';
+    button.textContent = 'Payant ?';
+    document.body.appendChild(button);
+
+    // Ajouter les event listeners
+    button.addEventListener('click', trackDomain);
+
+    // Observer pour les changements dynamiques dans le DOM
+    const observer = new MutationObserver(function(mutations) {
+        checkAndMarkLinks();
+    });
+
+    observer.observe(document.body, {
+        childList: true,
+        subtree: true
+    });
+
+    // Vérifier les liens existants au chargement
+    checkAndMarkLinks();
+})();
