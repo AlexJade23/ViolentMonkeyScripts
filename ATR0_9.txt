@@ -1,0 +1,880 @@
+// ==UserScript==
+// @name Affichage métriques de page (avec temps de rendu SPA) 0.9
+// @namespace http://tampermonkey.net/
+// @version 0.9
+// @description Affiche le domaine, chemin, paramètres, temps de rendu, horodatage et formulaire de transmission dans un div en bas à droite - Support SPA complet
+// @author You
+// @match *://*/*
+// @grant none
+// @run-at document-idle
+// ==/UserScript==
+(function() {
+    'use strict';
+    console.log('Script de métriques démarré');
+    // Variables globales pour le suivi
+    let lastPathAndHash = '';
+    let clickTime = 0;
+    let navigationStartTime = 0;
+    let initialLoadTime = 0;
+    let initialDOMLoadTime = 0;
+
+    // Identifiants 
+    const encodedApiUsername = "cG9sZW51Y2xlYWlyZS52ZW51c0B2aW5jaS1lbmVyZ2llcy5jb20="; 
+    const encodedApiPassword = "UDBsZVZFTnVzNjkh"; 
+
+    // URLs des API (à remplacer par vos URLs réelles)
+    const tokenApiUrl = "https://apisafeplace.teepee.fr/v2/ExternAPI/token";
+    const metricsApiUrl = "https://apisafeplace.teepee.fr/v2/ExternAPI/objectdata/ATRAnalyseTempsReponse";  
+
+    // Fonction pour créer l'élément div qui contiendra les infos
+    function createMetricsDiv() {
+      console.log('Création du div de métriques');
+      const metricsDiv = document.createElement('div');
+      // Styling du div
+      Object.assign(metricsDiv.style, {
+        position: 'fixed',
+        bottom: '0px',
+        right: '0px',
+        backgroundColor: 'black',
+        color: 'white',
+        padding: '4px',
+        fontSize: '10px',
+        fontFamily: 'monospace',
+        zIndex: '9999999',
+        lineHeight: '1.2',
+        opacity: '0.8',
+        borderTopLeftRadius: '3px',
+        whiteSpace: 'normal',
+        maxWidth: '300px',
+        wordWrap: 'break-word',
+        overflow: 'visible'
+      });
+      metricsDiv.id = 'page-metrics-display';
+      return metricsDiv;
+    }
+
+    // Fonction pour extraire correctement les informations d'URL avec support des fragments (#)
+    function parseURL(url) {
+      const currentURL = new URL(url);
+      // Extraire le domaine
+      const domainInfo = currentURL.hostname;
+      // Pour le chemin, on combine le pathname et le hash (fragment)
+      let pathInfo = currentURL.pathname;
+      // Si nous avons un fragment (#), on le considère comme partie du chemin
+      if (currentURL.hash) {
+        // Si le hash contient un ?, on sépare la partie chemin des paramètres
+        if (currentURL.hash.includes('?')) {
+          pathInfo = pathInfo + currentURL.hash.split('?')[0];
+        } else {
+          pathInfo = pathInfo + currentURL.hash;
+        }
+      }
+      // Pour les paramètres, on examine d'abord search (après ?)
+      let paramsInfo = currentURL.search;
+      // Vérifier aussi les paramètres après le # (cas spécial des SPA)
+      if (currentURL.hash && currentURL.hash.includes('?')) {
+        const hashParts = currentURL.hash.split('?');
+        if (hashParts.length > 1) {
+          // Si nous avons déjà des paramètres de search, ajouter ceux du hash
+          if (paramsInfo) {
+            paramsInfo += '&' + hashParts[1];
+          } else {
+            paramsInfo = '?' + hashParts[1];
+          }
+        }
+      }
+      // Si aucun paramètre n'est trouvé
+      if (!paramsInfo) {
+        paramsInfo = "(aucun paramètre)";
+      }
+      return {
+        domainInfo,
+        pathInfo,
+        paramsInfo
+      };
+    }
+
+    // Fonction pour calculer le temps de chargement initial de la page
+    function getInitialLoadTimes() {
+      if (initialLoadTime > 0 && initialDOMLoadTime > 0) {
+        return { initialLoadTime, initialDOMLoadTime };
+      }
+      if (window.performance && window.performance.timing) {
+        const timing = window.performance.timing;
+        if (timing.loadEventEnd > 0 && timing.navigationStart > 0) {
+          initialLoadTime = timing.loadEventEnd - timing.navigationStart;
+          initialDOMLoadTime = timing.domContentLoadedEventEnd - timing.navigationStart;
+        }
+      }
+      // Mise à jour avec l'API Performance moderne si disponible
+      if (window.performance && typeof performance.getEntriesByType === 'function') {
+        try {
+          const navEntries = performance.getEntriesByType('navigation');
+          if (navEntries.length > 0) {
+            const navEntry = navEntries[0];
+            initialLoadTime = Math.round(navEntry.loadEventEnd);
+            initialDOMLoadTime = Math.round(navEntry.domContentLoadedEventEnd);
+          }
+        } catch (e) {
+          console.error('Erreur avec l\'API Performance moderne:', e);
+        }
+      }
+      return { initialLoadTime, initialDOMLoadTime };
+    }
+
+    // Fonction pour obtenir la date et l'heure formatées
+    function getFormattedDateTime() {
+      const now = new Date();
+      const day = String(now.getDate()).padStart(2, '0');
+      const month = String(now.getMonth() + 1).padStart(2, '0');
+      const year = now.getFullYear();
+      const formattedDate = `${year}-${month}-${day}`;
+
+      const hours = String(now.getHours()).padStart(2, '0');
+      const minutes = String(now.getMinutes()).padStart(2, '0');
+      const seconds = String(now.getSeconds()).padStart(2, '0');
+      const milliseconds = String(now.getMilliseconds()).padStart(3, '0');
+      const formattedTime = `${hours}:${minutes}:${seconds} ${milliseconds}`;
+
+      return {
+        pdate: formattedDate,
+        ptime: formattedTime,
+        isoDate: now.toISOString() // Format ISO pour compatibilité
+      };
+    }
+
+    // Fonction pour détecter quand le contenu est complètement chargé après une navigation SPA
+    function detectContentLoadEnd() {
+      // On commence à vérifier l'activité du réseau et les mutations DOM
+      let lastNetworkActivity = performance.now();
+      let lastDOMMutation = performance.now();
+      let contentStableTime = 0;
+      // Observer les mutations DOM pour détecter quand le contenu se stabilise
+      const observer = new MutationObserver(() => {
+        lastDOMMutation = performance.now();
+      });
+      // Observer tout le corps de la page pour les changements d'éléments
+      observer.observe(document.body, {
+        childList: true,
+        subtree: true,
+        attributes: true,
+        characterData: true
+      });
+      // Intercepter les requêtes XHR
+      const originalXHROpen = XMLHttpRequest.prototype.open;
+      const originalXHRSend = XMLHttpRequest.prototype.send;
+      let activeXHRs = 0;
+      XMLHttpRequest.prototype.open = function() {
+        this.addEventListener('loadend', () => {
+          activeXHRs--;
+          lastNetworkActivity = performance.now();
+        });
+        return originalXHROpen.apply(this, arguments);
+      };
+      XMLHttpRequest.prototype.send = function() {
+        activeXHRs++;
+        lastNetworkActivity = performance.now();
+        return originalXHRSend.apply(this, arguments);
+      };
+      // Intercepter les requêtes fetch
+      const originalFetch = window.fetch;
+      window.fetch = function() {
+        lastNetworkActivity = performance.now();
+        const fetchPromise = originalFetch.apply(this, arguments);
+        fetchPromise.then(() => {
+          lastNetworkActivity = performance.now();
+        }).catch(() => {
+          lastNetworkActivity = performance.now();
+        });
+        return fetchPromise;
+      };
+      // Vérifier périodiquement si le contenu s'est stabilisé
+      const stabilityInterval = setInterval(() => {
+        const now = performance.now();
+        const timeSinceLastDOMMutation = now - lastDOMMutation;
+        const timeSinceLastNetworkActivity = now - lastNetworkActivity;
+        // Si aucune activité pendant au moins 200ms et aucune requête XHR active
+        if (timeSinceLastDOMMutation > 200 && timeSinceLastNetworkActivity > 200 && activeXHRs === 0) {
+          if (contentStableTime === 0) {
+            contentStableTime = now;
+          } else if (now - contentStableTime > 300) {
+            // Le contenu est stable depuis plus de 300ms, considérons que le chargement est terminé
+            clearInterval(stabilityInterval);
+            observer.disconnect();
+            // Restaurer les fonctions originales
+            XMLHttpRequest.prototype.open = originalXHROpen;
+            XMLHttpRequest.prototype.send = originalXHRSend;
+            window.fetch = originalFetch;
+            // Mettre à jour le temps de rendu SPA
+            const renderTime = Math.round(now - navigationStartTime);
+            updateRenderTime(renderTime);
+          }
+        } else {
+          // Réinitialiser si de l'activité est détectée
+          contentStableTime = 0;
+        }
+      }, 100);
+      // Arrêter la détection après 10 secondes dans tous les cas
+      setTimeout(() => {
+        clearInterval(stabilityInterval);
+        observer.disconnect();
+        // Restaurer les fonctions originales
+        XMLHttpRequest.prototype.open = originalXHROpen;
+        XMLHttpRequest.prototype.send = originalXHRSend;
+        window.fetch = originalFetch;
+        // Si le contenu n'a pas été détecté comme stable, utilisez le temps actuel
+        if (contentStableTime === 0) {
+          const renderTime = Math.round(performance.now() - navigationStartTime);
+          updateRenderTime(renderTime);
+        }
+      }, 10000);
+    }
+
+    let currentRenderTime = 0;
+
+    // Fonction pour mettre à jour uniquement le temps de rendu dans le div de métriques
+    function updateRenderTime(renderTime, isInitialLoad = true) {
+      const metricsDiv = document.getElementById('page-metrics-display');
+      if (!metricsDiv) return;
+
+      // Stocker la valeur actuelle du temps de rendu
+      currentRenderTime = renderTime / 1000; // Convertir en secondes
+
+      // Obtenir la date et l'heure actuelles
+      const { pdate, ptime, pisoDate } = getFormattedDateTime(); //const dateTime = getFormattedDateTime();
+      // Cibler directement la div du temps par son ID
+      const timeDiv = document.getElementById('metrics-time');
+      if (timeDiv) {
+        if (isInitialLoad) {
+          timeDiv.innerHTML = `Temps 2: ${currentRenderTime}s ${pdate} à ${ptime}`;
+        } else {
+          timeDiv.innerHTML = `Temps 3: ${currentRenderTime}s * ${pdate} à ${ptime}`;
+        }
+      } else {
+        console.error('Div du temps non trouvée');
+      }
+    }
+
+    // Fonction pour créer le formulaire
+    function createMetricsForm() {
+      const formContainer = document.createElement('div');
+      formContainer.id = 'metrics-form-container';
+      formContainer.style.marginTop = '10px';
+      formContainer.style.borderTop = '1px dotted white';
+      formContainer.style.paddingTop = '5px';
+
+      // Titre du formulaire
+      const formTitle = document.createElement('div');
+      formTitle.textContent = 'Transmettre métriques:';
+      formTitle.style.fontWeight = 'bold';
+      formTitle.style.marginBottom = '5px';
+      formContainer.appendChild(formTitle);
+
+      // Section Réseau
+      const networkSection = document.createElement('div');
+      networkSection.style.marginBottom = '5px';
+
+      const networkLabel = document.createElement('div');
+      networkLabel.textContent = 'Réseau:';
+      networkSection.appendChild(networkLabel);
+
+      const networkOptions = ['Wifi', 'Cable', 'Partage Connexion', 'Je ne sais pas'];
+      networkOptions.forEach(option => {
+        const radioContainer = document.createElement('div');
+        radioContainer.style.marginLeft = '8px';
+
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        radioInput.name = 'network';
+        radioInput.id = `network-${option.toLowerCase().replace(/\s+/g, '-')}`;
+        radioInput.value = option;
+
+        const radioLabel = document.createElement('label');
+        radioLabel.htmlFor = radioInput.id;
+        radioLabel.textContent = option;
+        radioLabel.style.marginLeft = '3px';
+
+        radioContainer.appendChild(radioInput);
+        radioContainer.appendChild(radioLabel);
+        networkSection.appendChild(radioContainer);
+      });
+      formContainer.appendChild(networkSection);
+
+      // Section Lieu
+      const locationSection = document.createElement('div');
+      locationSection.style.marginBottom = '5px';
+
+      const locationLabel = document.createElement('div');
+      locationLabel.textContent = 'Lieu:';
+      locationSection.appendChild(locationLabel);
+
+      const locationOptions = ['Vinci', 'Domicile', 'Client', 'Transport', 'Autre'];
+      locationOptions.forEach(option => {
+        const radioContainer = document.createElement('div');
+        radioContainer.style.marginLeft = '8px';
+
+        const radioInput = document.createElement('input');
+        radioInput.type = 'radio';
+        radioInput.name = 'location';
+        radioInput.id = `location-${option.toLowerCase().replace(/\s+/g, '-')}`;
+        radioInput.value = option;
+
+        const radioLabel = document.createElement('label');
+        radioLabel.htmlFor = radioInput.id;
+        radioLabel.textContent = option;
+        radioLabel.style.marginLeft = '3px';
+
+        radioContainer.appendChild(radioInput);
+        radioContainer.appendChild(radioLabel);
+        locationSection.appendChild(radioContainer);
+      });
+      formContainer.appendChild(locationSection);
+
+      // Bouton Transmettre
+      const submitButton = document.createElement('button');
+      submitButton.textContent = 'Transmettre';
+      submitButton.id = 'metrics-submit-button';
+      submitButton.style.marginTop = '5px';
+      submitButton.style.width = '100%';
+      submitButton.style.padding = '3px';
+      submitButton.style.backgroundColor = '#333';
+      submitButton.style.color = 'white';
+      submitButton.style.border = '1px solid #555';
+      submitButton.style.borderRadius = '3px';
+      submitButton.style.cursor = 'pointer';
+
+      // Zone de statut
+      const statusArea = document.createElement('div');
+      statusArea.id = 'metrics-status';
+      statusArea.style.marginTop = '5px';
+      statusArea.style.fontSize = '9px';
+      statusArea.style.color = '#aaa';
+
+      formContainer.appendChild(submitButton);
+      formContainer.appendChild(statusArea);
+
+      return formContainer;
+    }
+
+    // Fonction pour obtenir un token d'authentification
+    async function getAuthToken() {
+      try {
+        // Décodage des identifiants au moment de l'utilisation
+        const username = atob(encodedApiUsername);
+        const password = atob(encodedApiPassword);
+
+        const response = await fetch(tokenApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            "Account": "12045",
+            "Login": username,
+            "Password": password
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Erreur d'authentification: ${response.status}`);
+        }
+
+        const data = await response.json();
+        return data.token; // Supposant que l'API retourne un objet avec une propriété token
+      } catch (error) {
+        console.error('Erreur lors de l\'obtention du token:', error);
+        throw error;
+      }
+    }
+
+    // Fonction pour envoyer les métriques à l'API
+    async function sendMetricsData(compte, utilisateur, domainInfo, pathInfo, paramsInfo, pDate, pTime, pTemps, network, location) {
+      try {
+        const statusArea = document.getElementById('metrics-status');
+        if (statusArea) {
+          statusArea.textContent = 'Authentification en cours...';
+        }
+
+        // Obtenir le token d'authentification
+        const token = await getAuthToken();
+
+        if (statusArea) {
+          statusArea.textContent = 'Envoi des données en cours...';
+        }
+
+        // Analyser l'URL actuelle
+        const urlInfo = parseURL(window.location.href);
+
+        // Obtenir le temps de chargement
+        const { initialLoadTime } = getInitialLoadTimes();
+
+        // Préparer les données à envoyer
+        const metricsData = {
+          "type": "ATRAnalyseTempsReponse",
+          "attributes": {
+            'Compte': compte,
+            'Utilisateur': utilisateur,
+            'Heure': pTime,
+            'Domaine': domainInfo,
+            'Page': pathInfo,
+            'Parametres': paramsInfo,
+            'Temps': pTemps, 
+            'Date': pDate,
+            'Reseau': network,
+            'Lieu': location
+          }
+        };
+
+        // Envoyer les données
+        const response = await fetch(metricsApiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`,
+            'Accept': '*/*',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Connection': 'keep-alive'
+          },
+          body: JSON.stringify(metricsData)
+        });
+        
+        if (!response.ok) {
+          const status = response.status;
+          const jsonData = await response.text();
+          throw new Error(`Erreur d'envoi: ${status}, jsonData = ${jsonData}, token = ${token}, metricsData = ${JSON.stringify(metricsData)}`);
+        }
+
+        if (statusArea) {
+          statusArea.textContent = 'Données transmises avec succès!';
+          // Réinitialiser après 4 secondes
+          setTimeout(() => {
+            statusArea.textContent = '';
+          }, 4000);
+        }
+
+        return true;
+      } catch (error) {
+        console.error('Erreur lors de l\'envoi des métriques:', error);
+        const statusArea = document.getElementById('metrics-status');
+        if (statusArea) {
+          statusArea.textContent = `Erreur: ${error.message}`;
+        }
+        return false;
+      }
+    }
+
+    // Fonction pour mettre à jour les métriques d'URL et démarrer la mesure du temps de rendu
+    function updateMetrics(isNavigationEvent = false) {
+      const metricsDiv = document.getElementById('page-metrics-display');
+      if (!metricsDiv) {
+        displayPageMetrics();
+        return;
+      }
+      try {
+        // Analyser l'URL
+        const urlInfo = parseURL(window.location.href);
+        console.log('Informations URL analysées:', urlInfo);
+        // Calculer le temps de chargement initial
+        const { initialLoadTime, initialDOMLoadTime } = getInitialLoadTimes();
+        // Obtenir la date et l'heure actuelles
+        const { pdate, ptime, isoDate } = getFormattedDateTime(); //const dateTime = getFormattedDateTime();
+        // Rechercher le titre du compte dans les éléments li avec la classe spécifiée
+        let accountInfo = "";
+        let compte= "";
+        try {
+          const logoElement = document.querySelector('li.left-header.list.logo');
+          if (logoElement && logoElement.title) {
+            accountInfo = `<div>Compte: ${logoElement.title}</div>`;
+            compte = logoElement.title;
+          }
+        } catch (e) {
+          console.error('Erreur lors de la recherche du titre du compte:', e);
+        }
+        // Ajouter le contenu du tag aria-label pour l'élément avec l'id menuitem_1
+        let ariaLabelInfo = "";
+        let utilisateur = "";
+        try {
+          // const menuItem = document.getElementById('menuitem_1');
+          // if (menuItem && menuItem.getAttribute('aria-label')) {
+          //   ariaLabelInfo = `<div>Utilisateur: ${menuItem.getAttribute('aria-label')}</div>`;
+          //   utilisateur = menuItem.getAttribute('aria-label');
+          // }
+          const menuItems = document.querySelectorAll('li.e-menu-item[role="menuitem"][aria-haspopup="true"]');
+          const labels = [];
+          for (const item of menuItems) {
+            const label = item.getAttribute('aria-label');
+            if (label && !label.toLowerCase().startsWith('menu')) {
+              labels.push(label);
+            }
+          }
+          utilisateur = labels.join(', ');
+          ariaLabelInfo = `<div>Utilisateur: ${utilisateur}</div>`;
+        } catch (e) {
+          console.error('Erreur lors de la recherche de l\'aria-label:', e);
+        }
+
+        // <div style="text-align:center; border-bottom:1px dotted white; margin-bottom:3px; cursor:pointer;" onclick="copyMetricsToClipboard()">📋 Copier</div>
+        
+        // Créer la partie supérieure du div de métriques
+        const metricsContent = `
+          <div style="display:flex; justify-content:space-between; border-bottom:1px dotted white; margin-bottom:3px;">
+            <div style="cursor:pointer; padding:0 5px;" onclick="copyMetricsToClipboard()">📋 Copier</div>
+            <div style="cursor:pointer; padding:0 5px; color:#ff6b6b;" onclick="hideMetricsDiv()">✕ Fermer</div>
+          </div>  
+          ${accountInfo}
+          ${ariaLabelInfo}
+          <div>Domaine: ${urlInfo.domainInfo}</div>
+          <div>Page: ${urlInfo.pathInfo}</div>
+          <div>Paramètres: ${urlInfo.paramsInfo}</div>
+          <div id="metrics-time">Temps Initial: ${isNavigationEvent ? 'calcul en cours...' : (initialLoadTime/1000 + 's')} ${pdate} à ${ptime}</div>
+        `;
+
+        // Mettre à jour le contenu du div
+        metricsDiv.innerHTML = metricsContent;
+
+        // Ajouter le formulaire si ce n'est pas un événement de navigation
+        const existingForm = document.getElementById('metrics-form-container');
+        if (!existingForm) {
+          const formContainer = createMetricsForm();
+          metricsDiv.appendChild(formContainer);
+          setupFormEvents(compte, utilisateur, urlInfo.domainInfo, urlInfo.pathInfo, urlInfo.paramsInfo, pdate, ptime, currentRenderTime > 0 ? currentRenderTime : (initialLoadTime/1000));
+        }
+
+        // Si c'est un événement de navigation, démarrer le chronomètre pour mesurer le temps de rendu
+        if (isNavigationEvent) {
+          navigationStartTime = performance.now();
+          // Démarrer la détection de la fin du chargement
+          detectContentLoadEnd();
+        }
+
+        // Définir la fonction de copie dans le contexte global
+        window.copyMetricsToClipboard = function() {
+          const metricsTextDivs = Array.from(metricsDiv.querySelectorAll('div'))
+            .filter((div) => {
+              // Ignorer la div du bouton de copie et tout le formulaire
+              return div.id !== 'metrics-form-container' &&
+                     !div.closest('#metrics-form-container') &&
+                     !div.onclick;
+            })
+            .map(div => div.textContent)
+            .join('\n');
+
+          // Créer un élément temporaire pour la copie
+          const textarea = document.createElement('textarea');
+          textarea.value = metricsTextDivs;
+          textarea.style.position = 'fixed';
+          document.body.appendChild(textarea);
+          textarea.select();
+          try {
+            document.execCommand('copy');
+            const copyBtn = metricsDiv.querySelector('div');
+            if (copyBtn) {
+              copyBtn.textContent = "✓ Copié !";
+              setTimeout(() => {
+                copyBtn.textContent = "📋 Copier";
+              }, 1000);
+            }
+          } catch (err) {
+            console.error('Erreur lors de la copie:', err);
+          }
+          document.body.removeChild(textarea);
+        };
+
+        window.hideMetricsDiv = function() {
+          const metricsDiv = document.getElementById('page-metrics-display');
+          if (metricsDiv) {
+            metricsDiv.style.display = 'none';
+            
+            // Ajouter un petit bouton flottant pour réafficher
+            const showButton = document.createElement('div');
+            showButton.id = 'show-metrics-button';
+            Object.assign(showButton.style, {
+              position: 'fixed',
+              bottom: '0px',
+              right: '0px',
+              backgroundColor: 'black',
+              color: 'white',
+              padding: '3px 6px',
+              fontSize: '10px',
+              fontFamily: 'monospace',
+              zIndex: '9999999',
+              opacity: '0.6',
+              cursor: 'pointer',
+              borderTopLeftRadius: '3px'
+            });
+            showButton.textContent = '📊';
+            showButton.title = 'Afficher les métriques';
+            showButton.onclick = function() {
+              metricsDiv.style.display = 'block';
+              document.body.removeChild(showButton);
+            };
+            document.body.appendChild(showButton);
+          }
+        };
+
+        console.log('Contenu du div de métriques mis à jour');
+      } catch (e) {
+        console.error('Erreur lors de la mise à jour des métriques:', e);
+        metricsDiv.innerHTML = `<div>Erreur: ${e.message}</div>`;
+      }
+    }
+
+    // Fonction principale pour afficher les métriques
+    function displayPageMetrics() {
+      console.log('Affichage initial des métriques');
+      if (!document.body) {
+        console.error('Le body n\'existe pas encore, nouvelle tentative après délai');
+        setTimeout(displayPageMetrics, 100);
+        return;
+      }
+      // Éviter les doublons
+      if (document.getElementById('page-metrics-display')) {
+        updateMetrics();
+        return;
+      }
+      const metricsDiv = createMetricsDiv();
+      document.body.appendChild(metricsDiv);
+      console.log('Div de métriques ajouté au body');
+      // Initialiser avec les valeurs actuelles
+      updateMetrics();
+      // Stocker le chemin+hash actuel pour détecter les changements
+      lastPathAndHash = window.location.pathname + window.location.hash;
+    }
+
+    // Surveiller les clics pour mesurer le temps de réponse
+    function setupClickListener() {
+      document.addEventListener('click', function(e) {
+        console.log('Clic détecté');
+        clickTime = performance.now();
+        // Vérifier si le clic est sur un lien ou un élément de navigation
+        let target = e.target;
+        let isNavigationElement = false;
+        // Remonter jusqu'à 5 niveaux pour trouver un élément de navigation potentiel
+        for (let i = 0; i < 5 && target; i++) {
+          if (target.tagName === 'A' ||
+              target.tagName === 'BUTTON' ||
+              target.getAttribute('role') === 'button' ||
+              target.getAttribute('role') === 'link' ||
+              target.getAttribute('role') === 'tab' ||
+              target.getAttribute('role') === 'menuitem') {
+            isNavigationElement = true;
+            break;
+          }
+          target = target.parentElement;
+        }
+        // Si c'est un élément de navigation, attendre un changement d'URL
+        if (isNavigationElement) {
+          setTimeout(function() {
+            const currentPathAndHash = window.location.pathname + window.location.hash;
+            if (currentPathAndHash !== lastPathAndHash) {
+              console.log('Changement d\'URL détecté après clic sur élément de navigation');
+              lastPathAndHash = currentPathAndHash;
+              updateMetrics(true); // true indique un événement de navigation
+              navigationStartTime = clickTime; // Utiliser le moment du clic comme début de navigation
+            }
+          }, 50);
+        }
+      }, true);
+    }
+
+    // Surveiller les changements de hash pour les SPA
+    function setupHashChangeListener() {
+      window.addEventListener('hashchange', function() {
+        console.log('Événement hashchange détecté');
+        const currentPathAndHash = window.location.pathname + window.location.hash;
+        if (currentPathAndHash !== lastPathAndHash) {
+          lastPathAndHash = currentPathAndHash;
+          updateMetrics(true);
+        }
+      });
+    }
+
+    // Surveiller l'historique pour les SPA (pushState/replaceState)
+    function setupHistoryListener() {
+      // Stocker les fonctions originales
+      const originalPushState = history.pushState;
+      const originalReplaceState = history.replaceState;
+      // Remplacer pushState
+      history.pushState = function() {
+        originalPushState.apply(this, arguments);
+        console.log('pushState détecté');
+        const currentPathAndHash = window.location.pathname + window.location.hash;
+        if (currentPathAndHash !== lastPathAndHash) {
+          lastPathAndHash = currentPathAndHash;
+          updateMetrics(true);
+        }
+      };
+      // Remplacer replaceState
+      history.replaceState = function() {
+        originalReplaceState.apply(this, arguments);
+        console.log('replaceState détecté');
+        const currentPathAndHash = window.location.pathname + window.location.hash;
+        if (currentPathAndHash !== lastPathAndHash) {
+          lastPathAndHash = currentPathAndHash;
+          updateMetrics(true);
+        }
+      };
+      // Écouter aussi l'événement popstate (navigation avant/arrière)
+      window.addEventListener('popstate', function() {
+        console.log('Événement popstate détecté');
+        const currentPathAndHash = window.location.pathname + window.location.hash;
+        if (currentPathAndHash !== lastPathAndHash) {
+          lastPathAndHash = currentPathAndHash;
+          updateMetrics(true);
+        }
+      });
+    }
+
+    // Initialiser le script
+    function init() {
+      // Obtenir le temps de chargement initial
+      getInitialLoadTimes();
+      // Afficher les métriques
+      displayPageMetrics();
+      // Configurer les écouteurs d'événements
+      setupClickListener();
+      setupHashChangeListener();
+      setupHistoryListener();
+      // Surveiller les changements d'URL toutes les secondes (filet de sécurité)
+      setInterval(function() {
+        const currentPathAndHash = window.location.pathname + window.location.hash;
+        if (currentPathAndHash !== lastPathAndHash) {
+          console.log('Changement d\'URL détecté par intervalles');
+          lastPathAndHash = currentPathAndHash;
+          updateMetrics(true);
+        }
+      }, 1000);
+    }
+
+
+    // Fonction pour sauvegarder les sélections en localStorage
+    function saveUserSelections() {
+      const networkRadios = document.getElementsByName('network');
+      const locationRadios = document.getElementsByName('location');
+      
+      let selectedNetwork = null;
+      let selectedLocation = null;
+      
+      // Vérifier la sélection réseau
+      for (const radio of networkRadios) {
+        if (radio.checked) {
+          selectedNetwork = radio.value;
+          break;
+        }
+      }
+      
+      // Vérifier la sélection lieu
+      for (const radio of locationRadios) {
+        if (radio.checked) {
+          selectedLocation = radio.value;
+          break;
+        }
+      }
+      
+      // Sauvegarder en localStorage si des sélections ont été faites
+      if (selectedNetwork) {
+        localStorage.setItem('metrics_network', selectedNetwork);
+      }
+      
+      if (selectedLocation) {
+        localStorage.setItem('metrics_location', selectedLocation);
+      }
+    }
+
+    // Fonction pour restaurer les sélections depuis localStorage
+    function restoreUserSelections() {
+      const savedNetwork = localStorage.getItem('metrics_network');
+      const savedLocation = localStorage.getItem('metrics_location');
+      
+      if (savedNetwork) {
+        const networkRadio = document.querySelector(`input[name="network"][value="${savedNetwork}"]`);
+        if (networkRadio) {
+          networkRadio.checked = true;
+        }
+      }
+      
+      if (savedLocation) {
+        const locationRadio = document.querySelector(`input[name="location"][value="${savedLocation}"]`);
+        if (locationRadio) {
+          locationRadio.checked = true;
+        }
+      }
+    }
+
+    // Modifier la fonction setupFormEvents pour sauvegarder les sélections quand l'utilisateur clique sur les boutons radio
+    function setupFormEvents(compte, utilisateur, domainInfo, pathInfo, paramsInfo, pDate, pTime, pTemps) {
+      const submitButton = document.getElementById('metrics-submit-button');
+      if (!submitButton) return;
+      
+      // Attacher des écouteurs d'événements à tous les boutons radio pour sauvegarder les sélections
+      const allRadios = document.querySelectorAll('input[type="radio"][name="network"], input[type="radio"][name="location"]');
+      allRadios.forEach(radio => {
+        radio.addEventListener('change', saveUserSelections);
+      });
+      
+      // Restaurer les sélections précédentes
+      restoreUserSelections();
+      
+      submitButton.addEventListener('click', async function() {
+        // Récupérer les valeurs sélectionnées
+        const networkRadios = document.getElementsByName('network');
+        const locationRadios = document.getElementsByName('location');
+        
+        let selectedNetwork = null;
+        let selectedLocation = null;
+        
+        // Vérifier la sélection réseau
+        for (const radio of networkRadios) {
+          if (radio.checked) {
+            selectedNetwork = radio.value;
+            break;
+          }
+        }
+        
+        // Vérifier la sélection lieu
+        for (const radio of locationRadios) {
+          if (radio.checked) {
+            selectedLocation = radio.value;
+            break;
+          }
+        }
+        
+        // Vérifier que les deux sélections sont faites
+        const statusArea = document.getElementById('metrics-status');
+        if (!selectedNetwork || !selectedLocation) {
+          if (statusArea) {
+            statusArea.textContent = 'Erreur: Veuillez sélectionner une option pour chaque catégorie.';
+          }
+          return;
+        }
+        
+        // Sauvegarder les sélections (bien que ce soit redondant, c'est une sécurité)
+        saveUserSelections();
+        
+        // Envoyer les données
+        await sendMetricsData(compte, utilisateur, domainInfo, pathInfo, paramsInfo, pDate, pTime, currentRenderTime , selectedNetwork, selectedLocation);
+      });
+    }    
+    // Démarrer le script
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', function() {
+        setTimeout(init, 100);
+      });
+    } else {
+      setTimeout(init, 100);
+    }
+
+    // S'assurer que le script s'exécute même si load est déjà passé
+    window.addEventListener('load', function() {
+      if (!document.getElementById('page-metrics-display')) {
+        init();
+      }
+    });
+
+    // Dernière tentative
+    setTimeout(function() {
+      if (!document.getElementById('page-metrics-display')) {
+        init();
+      }
+    }, 2000);
+   })();
