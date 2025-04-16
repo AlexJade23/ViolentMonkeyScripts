@@ -19,8 +19,8 @@
     let initialDOMLoadTime = 0;
 
     // Identifiants 
-    const encodedApiUsername = "cG9sZW51Y2xlYWlyZS52ZW51c0B2aW5jaS1lbmVyZ2llcy5jb20="; 
-    const encodedApiPassword = "UDBsZVZFTnVzNjkh"; 
+    const encodedApiUsername = ""; 
+    const encodedApiPassword = ""; 
 
     // URLs des API (à remplacer par vos URLs réelles)
     const tokenApiUrl = "https://apisafeplace.teepee.fr/v2/ExternAPI/token";
