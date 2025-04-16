@@ -1,0 +1,76 @@
+// ==UserScript==
+// @name         Sélection de texte vers Linkedin
+// @namespace    http://tampermonkey.net/
+// @version      1
+// @description  Ajoute un bouton qui permet de rechercher le texte sélectionné sur Linkedin
+// @author       Vous
+// @match        *://*/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Variable pour stocker le texte sélectionné
+    let selectedText = "";
+
+    // Fonction pour récupérer le texte sélectionné
+    function getSelectedText() {
+        if (window.getSelection) {
+            return window.getSelection().toString();
+        } else if (document.selection && document.selection.type != "Control") {
+            return document.selection.createRange().text;
+        }
+        return "";
+    }
+
+    // Création du bouton flottant
+    const button = document.createElement('button');
+    button.textContent = "> LinkedIn";
+    button.style.position = "fixed";
+    button.style.bottom = "50px";
+    button.style.left = "20px";
+    button.style.zIndex = "9999";
+    button.style.padding = "10px";
+    button.style.backgroundColor = "#0078d4"; // Couleur Bing
+    button.style.color = "white";
+    button.style.border = "none";
+    button.style.borderRadius = "5px";
+    button.style.cursor = "pointer";
+    button.style.display = "none"; // Caché par défaut
+
+    // Ajouter le bouton au document
+    document.body.appendChild(button);
+
+    // Écouteur d'événement pour détecter une sélection
+    document.addEventListener('mouseup', function() {
+        const text = getSelectedText();
+        if (text.length > 0) {
+            selectedText = text;
+            button.style.display = "block"; // Afficher le bouton quand il y a une sélection
+        }
+    });
+
+    // Si l'utilisateur clique ailleurs sans sélection, on vérifie s'il faut cacher le bouton
+    document.addEventListener('mousedown', function() {
+        setTimeout(function() {
+            if (getSelectedText().length === 0) {
+                button.style.display = "none"; // Cacher le bouton s'il n'y a pas de sélection
+            }
+        }, 100); // Court délai pour permettre à la sélection de se mettre à jour
+    });
+
+    // Action lors du clic sur le bouton
+    button.addEventListener('click', function() {
+        if (selectedText.length > 0) {
+            // Formater le texte pour l'URL (remplacer les espaces par des +)
+            const searchQuery = encodeURIComponent(selectedText.trim()).replace(/%20/g, '+');
+
+            // Ouvrir Bing avec la recherche dans un nouvel onglet
+            window.open('https://www.linkedin.com/search/results/all/?keywords=' + searchQuery, '_blank');
+
+            // Optionnel: cacher le bouton après avoir cliqué
+            button.style.display = "none";
+        }
+    });
+})();
