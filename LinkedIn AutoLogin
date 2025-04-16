@@ -1,0 +1,51 @@
+// ==UserScript==
+// @name         LinkedIn Auto Login
+// @namespace    http://tampermonkey.net/
+// @version      0.1
+// @description  Connexion automatique à LinkedIn
+// @author       Vous
+// @match        https://www.linkedin.com/login*
+// @match        https://linkedin.com/login*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Configurez vos identifiants ici
+    const votreEmail = '***'; // Remplacez par votre email ou téléphone
+    const votreMotDePasse = '***'; // Remplacez par votre mot de passe
+
+    // Fonction pour remplir le formulaire de connexion et le soumettre
+    function remplirEtSoumettre() {
+        // Vérifier si les éléments du formulaire existent
+        const champEmail = document.getElementById('username');
+        const champMotDePasse = document.getElementById('password');
+
+        if (champEmail && champMotDePasse) {
+            // Remplir les champs
+            champEmail.value = votreEmail;
+            champMotDePasse.value = votreMotDePasse;
+
+            // Déclencher les événements de changement pour activer le bouton de connexion
+            champEmail.dispatchEvent(new Event('input', { bubbles: true }));
+            champMotDePasse.dispatchEvent(new Event('input', { bubbles: true }));
+
+            // Chercher le bouton de connexion et le cliquer
+            const boutonConnexion = document.querySelector('button[type="submit"]');
+            if (boutonConnexion) {
+                setTimeout(() => {
+                    boutonConnexion.click();
+                }, 500); // Attendre un peu avant de cliquer pour s'assurer que tout est chargé
+            }
+        } else {
+            // Si les éléments ne sont pas encore chargés, réessayer dans 500ms
+            setTimeout(remplirEtSoumettre, 500);
+        }
+    }
+
+    // Lancer le processus de connexion une fois que la page est chargée
+    window.addEventListener('load', function() {
+        setTimeout(remplirEtSoumettre, 1000); // Attendre 1 seconde pour que tout soit bien chargé
+    });
+})();
