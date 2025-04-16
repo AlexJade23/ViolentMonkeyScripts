@@ -1,0 +1,437 @@
+// ==UserScript==
+// @name         Automatisation de connexions LinkedIn - Hotel Manager Avancé
+// @namespace    http://tampermonkey.net/
+// @version      0.5
+// @description  Clique sur les boutons "Se connecter" pour les profils du secteur hôtelier avec indicateur visuel
+// @author       Vous
+// @match        https://www.linkedin.com/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Variable pour suivre si un processus de connexion est en cours
+    let isConnectionInProgress = false;
+
+    // Paires de mots-clés à rechercher (les deux mots doivent être présents)
+    const KEYWORD_PAIRS = [
+        ['hotel', 'manager'],
+        ['hotel', 'management'],
+        ['hotel', 'directeur'],
+        ['hotel', 'directrice'],
+        ['hotel', 'director'],
+        ['hospitality', 'manager'],
+        ['hospitality', 'management'],
+        ['hôtel', 'directeur'],
+        ['hôtel', 'directrice'],
+        ['hôtel', 'manager'],
+        ['hôtellerie', 'direction'],
+        ['resort', 'manager'],
+        ['lodging', 'manager'],
+        ['spa', 'directeur'],
+        ['spa', 'manager'],
+        ['spa', 'management'],
+        ['accommodation', 'manager']
+    ];
+
+    // Mots individuels qui qualifient automatiquement (sans besoin de paire)
+    const INDIVIDUAL_KEYWORDS = [
+        'general manager hotel',
+        'hotel general manager',
+        'directeur général hôtel',
+        'hospitality director'
+    ];
+
+    // Log amélioré avec horodatage
+    function log(message) {
+        console.log(`[${new Date().toLocaleTimeString()}] ${message}`);
+    }
+
+    // Créer et insérer l'indicateur visuel
+    function createVisualIndicator() {
+        // Vérifier si l'indicateur existe déjà
+        if (document.getElementById('linkedin-connect-indicator')) {
+            return document.getElementById('linkedin-connect-indicator');
+        }
+
+        // Créer l'élément conteneur
+        const indicator = document.createElement('div');
+        indicator.id = 'linkedin-connect-indicator';
+        indicator.style.cssText = `
+            position: fixed;
+            bottom: 20px;
+            right: 20px;
+            background-color: rgba(0, 0, 0, 0.8);
+            color: white;
+            padding: 10px 15px;
+            border-radius: 5px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            z-index: 9999;
+            display: flex;
+            align-items: center;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+            transition: opacity 0.3s;
+            opacity: 0;
+        `;
+
+        // Créer l'élément d'animation de chargement
+        const spinner = document.createElement('div');
+        spinner.style.cssText = `
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(0, 115, 177, 0.3);
+            border-radius: 50%;
+            border-top-color: rgb(0, 115, 177);
+            animation: spin 1s linear infinite;
+            margin-right: 10px;
+        `;
+
+        // Ajouter l'animation CSS
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes spin {
+                to { transform: rotate(360deg); }
+            }
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            @keyframes fadeOut {
+                from { opacity: 1; }
+                to { opacity: 0; }
+            }
+        `;
+        document.head.appendChild(style);
+
+        // Créer l'élément de texte
+        const text = document.createElement('div');
+        text.id = 'linkedin-connect-indicator-text';
+
+        // Assembler
+        indicator.appendChild(spinner);
+        indicator.appendChild(text);
+        document.body.appendChild(indicator);
+
+        return indicator;
+    }
+
+    // Afficher l'indicateur avec un message
+    function showIndicator(message, duration = 0) {
+        const indicator = createVisualIndicator();
+        const textElement = document.getElementById('linkedin-connect-indicator-text');
+        textElement.textContent = message;
+
+        // Afficher avec animation
+        indicator.style.animation = 'fadeIn 0.3s forwards';
+        indicator.style.opacity = '1';
+
+        // Si une durée est spécifiée, masquer après ce délai
+        if (duration > 0) {
+            setTimeout(() => {
+                indicator.style.animation = 'fadeOut 0.3s forwards';
+                setTimeout(() => {
+                    indicator.style.display = 'none';
+                }, 300);
+            }, duration);
+        }
+
+        return indicator;
+    }
+
+    // Masquer l'indicateur
+    function hideIndicator() {
+        const indicator = document.getElementById('linkedin-connect-indicator');
+        if (indicator) {
+            indicator.style.animation = 'fadeOut 0.3s forwards';
+            setTimeout(() => {
+                indicator.style.opacity = '0';
+            }, 300);
+        }
+    }
+
+    // Fonction pour vérifier si le texte contient l'une des paires de mots-clés
+    function containsKeywordPairs(text) {
+        if (!text) return false;
+
+        const lowerText = text.toLowerCase();
+
+        // Vérifier d'abord les mots-clés individuels qui qualifient automatiquement
+        for (const keyword of INDIVIDUAL_KEYWORDS) {
+            if (lowerText.includes(keyword.toLowerCase())) {
+                return {
+                    matches: true,
+                    matchedTerms: [keyword]
+                };
+            }
+        }
+
+        // Vérifier les paires (les deux mots doivent être présents)
+        for (const pair of KEYWORD_PAIRS) {
+            const word1 = pair[0].toLowerCase();
+            const word2 = pair[1].toLowerCase();
+
+            if (lowerText.includes(word1) && lowerText.includes(word2)) {
+                return {
+                    matches: true,
+                    matchedTerms: pair
+                };
+            }
+        }
+
+        return {
+            matches: false,
+            matchedTerms: []
+        };
+    }
+
+    // Fonction pour extraire le texte visible d'un élément (sans les balises HTML)
+    function getVisibleText(element) {
+        // Cloner l'élément pour ne pas modifier la page
+        const clone = element.cloneNode(true);
+
+        // Retirer les éléments script et style
+        const scripts = clone.querySelectorAll('script, style');
+        scripts.forEach(script => script.remove());
+
+        // Obtenir le texte visible
+        return clone.textContent.trim();
+    }
+
+    // Fonction pour trouver les boutons de connexion avec vérification de contexte
+    function findEligibleConnectButtons() {
+        // Trouver tous les boutons "Se connecter"
+        const connectButtons = document.querySelectorAll('button span.artdeco-button__text');
+        const eligibleButtons = [];
+
+        connectButtons.forEach(span => {
+            if (span.textContent.trim() === 'Se connecter') {
+                const button = span.closest('button');
+                if (!button) return;
+
+                // Remonter dans le DOM pour trouver un contexte plus large
+                let container = button.parentElement;
+                let depth = 0;
+                let contextText = "";
+
+                // Remonter jusqu'à 5 niveaux pour trouver un conteneur significatif
+                while (container && depth < 5) {
+                    // Essayer de trouver un élément qui pourrait contenir des informations de profil
+                    if (container.clientWidth > 200 && container.clientHeight > 100) {
+                        contextText = getVisibleText(container);
+                        if (contextText.length > 20) break;
+                    }
+                    container = container.parentElement;
+                    depth++;
+                }
+
+                // Si aucun contexte trouvé, essayer de prendre le texte avant le bouton
+                if (!contextText || contextText.length < 20) {
+                    // Prendre le conteneur parent du bouton
+                    const buttonParent = button.parentElement;
+                    if (buttonParent && buttonParent.parentElement) {
+                        const siblings = Array.from(buttonParent.parentElement.children);
+                        const buttonIndex = siblings.indexOf(buttonParent);
+
+                        // Extraire le texte des éléments avant le bouton
+                        let previousText = "";
+                        for (let i = 0; i < buttonIndex; i++) {
+                            previousText += getVisibleText(siblings[i]) + " ";
+                        }
+
+                        if (previousText.trim()) {
+                            contextText = previousText.trim();
+                        }
+                    }
+                }
+
+                // Vérifier si le texte contient des paires de mots-clés
+                const keywordResult = containsKeywordPairs(contextText);
+
+                // Extraire un extrait du contexte pour les logs (maximum 150 caractères)
+                const contextExtract = contextText.length > 150
+                    ? contextText.substring(0, 147) + "..."
+                    : contextText;
+
+                // Afficher les résultats dans les logs
+                if (keywordResult.matches) {
+                    log(`✓ ÉLIGIBLE - Mots trouvés: "${keywordResult.matchedTerms.join('" et "')}" - Contexte: "${contextExtract}"`);
+
+                    eligibleButtons.push({
+                        button: button,
+                        context: contextExtract,
+                        matchedTerms: keywordResult.matchedTerms
+                    });
+                } else {
+                    log(`✗ NON ÉLIGIBLE - Contexte: "${contextExtract}"`);
+                }
+            }
+        });
+
+        log(`Trouvé ${eligibleButtons.length} boutons éligibles sur un total de boutons "Se connecter".`);
+        return eligibleButtons;
+    }
+
+    // Fonction pour trouver le bouton "Envoyer sans note" dans la popup
+    function findSendWithoutNoteButton() {
+        // Méthodes multiples pour trouver le bouton dans la popup
+
+        // 1. Par aria-label
+        let button = document.querySelector('button[aria-label="Envoyer sans note"]');
+        if (button) {
+            return button;
+        }
+
+        // 2. Par texte exact du bouton
+        const buttonsByText = Array.from(document.querySelectorAll('button span.artdeco-button__text'))
+            .filter(span => span.textContent.trim() === 'Envoyer sans note')
+            .map(span => span.closest('button'));
+
+        if (buttonsByText.length > 0) {
+            return buttonsByText[0];
+        }
+
+        // 3. Par type de bouton et classe (bouton principal dans une popup récemment ouverte)
+        const primaryButtons = document.querySelectorAll('button.artdeco-button--primary');
+        for (const btn of primaryButtons) {
+            const spanText = btn.querySelector('span.artdeco-button__text');
+            if (spanText && spanText.textContent.includes('Envoyer')) {
+                return btn;
+            }
+        }
+
+        // 4. Chercher dans les dialogues modaux récemment apparus
+        const modals = document.querySelectorAll('div[role="dialog"]');
+        for (const modal of modals) {
+            const modalButtons = modal.querySelectorAll('button');
+            for (const btn of modalButtons) {
+                const spanText = btn.querySelector('span');
+                if (spanText && (spanText.textContent.includes('Envoyer') ||
+                                 spanText.textContent.includes('Confirmer') ||
+                                 spanText.textContent.includes('note'))) {
+                    return btn;
+                }
+            }
+        }
+
+        // Aucun bouton trouvé
+        return null;
+    }
+
+    // Fonction principale pour gérer un cycle complet de connexion
+    function processNextConnection() {
+        // Si déjà en cours de connexion, ne rien faire
+        if (isConnectionInProgress) {
+            return;
+        }
+
+        const eligibleButtons = findEligibleConnectButtons();
+
+        // S'il n'y a pas de boutons éligibles, ne rien faire
+        if (eligibleButtons.length === 0) {
+            log('Aucun bouton "Se connecter" éligible trouvé.');
+            hideIndicator();
+            return;
+        }
+
+        // Marquer comme en cours
+        isConnectionInProgress = true;
+
+        // Prendre le premier bouton éligible
+        const { button, context, matchedTerms } = eligibleButtons[0];
+
+        // Afficher l'indicateur de temporisation
+        showIndicator(`Profil trouvé: "${matchedTerms.join('" et "')}". Temporisation en cours...`);
+
+        log(`▶ ACTION: Clic sur "Se connecter" pour profil avec "${matchedTerms.join('" et "')}"`);
+
+        // Cliquer sur le bouton "Se connecter" après un délai aléatoire pour éviter la détection
+        const randomDelay = Math.floor(Math.random() * 1000) + 1000; // Entre 1 et 2 secondes
+
+        setTimeout(() => {
+            // Cliquer sur le bouton "Se connecter"
+            button.click();
+
+            // Mettre à jour l'indicateur
+            showIndicator(`Recherche de la popup de confirmation...`);
+
+            // Attendre et vérifier plusieurs fois si la popup apparaît
+            let checkCount = 0;
+            const maxChecks = 5; // Vérifier jusqu'à 5 fois
+
+            const checkForPopup = () => {
+                checkCount++;
+                const sendButton = findSendWithoutNoteButton();
+
+                if (sendButton) {
+                    showIndicator(`Popup trouvée. Envoi de la connexion...`);
+                    log('▶ ACTION: Popup trouvée. Clic sur "Envoyer sans note"');
+
+                    setTimeout(() => {
+                        sendButton.click();
+
+                        // Afficher un message de succès
+                        showIndicator(`Connexion envoyée ! En attente de la prochaine (${10 - checkCount} sec)...`);
+
+                        // Terminer le processus et réinitialiser le statut après un délai
+                        setTimeout(() => {
+                            isConnectionInProgress = false;
+                            log('✓ SUCCÈS: Connexion envoyée. Attente avant la prochaine...');
+                            hideIndicator();
+                        }, 5000); // Afficher le message de succès pendant 5 secondes
+                    }, 500); // Petit délai avant de cliquer sur le bouton
+                }
+                else if (checkCount < maxChecks) {
+                    // Continuer à vérifier si la popup n'est pas encore apparue
+                    setTimeout(checkForPopup, 500);
+                }
+                else {
+                    // Abandonner après plusieurs tentatives
+                    log('✗ ÉCHEC: Popup non trouvée après plusieurs tentatives. Passage à la connexion suivante.');
+                    showIndicator(`Popup non trouvée. Passage à la prochaine recherche...`, 3000);
+                    isConnectionInProgress = false;
+                }
+            };
+
+            // Démarrer la vérification après un court délai
+            setTimeout(checkForPopup, 800);
+        }, randomDelay);
+    }
+
+    // Afficher un message de démarrage
+    function showStartupMessage() {
+        showIndicator(`Script de connexions LinkedIn actif - Recherche de profils hôteliers...`, 5000);
+    }
+
+    // Attendre que la page soit chargée, puis démarrer le processus
+    window.addEventListener('load', () => {
+        log('✳ DÉMARRAGE: Automatisation des connexions pour les profils du secteur hôtelier...');
+        showStartupMessage();
+
+        // Attendre quelques secondes pour le chargement complet
+        setTimeout(() => {
+            // Démarrer le premier cycle
+            processNextConnection();
+
+            // Répéter toutes les 10 secondes
+            setInterval(() => {
+                if (!isConnectionInProgress) {
+                    processNextConnection();
+                }
+            }, 10000);
+        }, 3000);
+    });
+
+    // Vérifier également après le défilement pour trouver de nouveaux boutons
+    let scrollTimeout;
+    window.addEventListener('scroll', () => {
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+            if (!isConnectionInProgress) {
+                log('⟳ DÉFILEMENT: Recherche de nouveaux boutons...');
+                processNextConnection();
+            }
+        }, 1000);
+    });
+})();
