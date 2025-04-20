@@ -1,0 +1,784 @@
+// ==UserScript==
+// @name         Automatisation de connexions LinkedIn - Paramétrable
+// @namespace    http://tampermonkey.net/
+// @version      1.0
+// @description  Clique sur les boutons "Se connecter" pour les profils avec indicateur visuel et historique
+// @author       Alex Jade
+// @match        https://www.linkedin.com/*
+// @grant        none
+// ==/UserScript==
+
+(function() {
+    'use strict';
+
+    // Configuration des libellés pour faciliter la traduction
+    const LABELS = {
+        // Libellés de l'interface
+        scriptTitle: 'LinkedIn Auto Connect',
+        currentStatusTitle: 'Initialisation...',
+        historyTitle: 'Historique des connexions',
+        connectionCounter: 'Connexions: 0',
+        connectionCounterTemplate: 'Connexions réussies: {success}/{total}',
+        
+        // Statuts de connexion
+        statusSearching: 'Recherche de profils hôteliers...',
+        statusNoProfileFound: 'Aucun profil hôtelier trouvé. En attente...',
+        statusFoundProfiles: 'Trouvé {count} profil(s) hôtelier(s) éligible(s)',
+        statusConnecting: 'Connexion en cours avec: {name}',
+        statusLookingForPopup: 'Recherche de la popup de confirmation pour: {name}...',
+        statusSendingConnection: 'Envoi de la connexion à: {name}...',
+        statusConnectionSent: 'Connexion envoyée à: {name}. En attente de la prochaine...',
+        statusConnectionFailed: 'Échec de connexion avec: {name}. Passage à la suivante...',
+        statusInitializing: 'Initialisation du script de connexion LinkedIn...',
+        
+        // États des connexions
+        connectionInProgress: 'En cours',
+        connectionSuccess: 'Succès',
+        connectionFailed: 'Échec',
+        
+        // Bouton "Se connecter" à rechercher sur LinkedIn
+        connectButtonText: 'Se connecter',
+        
+        // Libellés de popup
+        sendWithoutNoteButton: 'Envoyer sans note',
+        
+        // Identifiants par défaut
+        defaultProfileName: 'Profil #{id}',
+        defaultProfileWithKeyword: 'Profil {keyword} #{id}'
+    };
+    
+    // Variable pour suivre si un processus de connexion est en cours
+    let isConnectionInProgress = false;
+    
+    // Tableau pour stocker l'historique des connexions
+    let connectionHistory = [];
+
+    // Paires de mots-clés à rechercher (les deux mots doivent être présents)
+    const KEYWORD_PAIRS = [
+        ['hotel', 'manager'],
+        ['hotel', 'management'],
+        ['hotel', 'directeur'],
+        ['hotel', 'directrice'],
+        ['hotel', 'director'],
+        ['hospitality', 'manager'],
+        ['hospitality', 'management'],
+        ['hôtel', 'directeur'],
+        ['hôtel', 'directrice'],
+        ['hôtel', 'manager'],
+        ['hôtellerie', 'direction'],
+        ['resort', 'manager'],
+        ['lodging', 'manager'],
+        ['spa', 'directeur'],
+        ['spa', 'manager'],
+        ['spa', 'management'],
+        ['accommodation', 'manager']
+    ];
+
+    // Mots individuels qui qualifient automatiquement (sans besoin de paire)
+    const INDIVIDUAL_KEYWORDS = [
+        'general manager hotel',
+        'hotel general manager',
+        'directeur général hôtel',
+        'hospitality director'
+    ];
+
+    // Log amélioré avec horodatage
+    function log(message) {
+        console.log(`[${new Date().toLocaleTimeString()}] ${message}`);
+    }
+
+    // Créer et insérer le panneau de statut permanent
+    function createStatusPanel() {
+        // Vérifier si le panneau existe déjà
+        if (document.getElementById('linkedin-connect-status-panel')) {
+            return document.getElementById('linkedin-connect-status-panel');
+        }
+
+        // Créer l'élément conteneur principal
+        const panel = document.createElement('div');
+        panel.id = 'linkedin-connect-status-panel';
+        panel.style.cssText = `
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background-color: rgba(10, 102, 194, 0.9);
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            font-family: Arial, sans-serif;
+            font-size: 14px;
+            z-index: 9999;
+            width: 300px;
+            max-height: 500px;
+            overflow-y: auto;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+            transition: all 0.3s;
+        `;
+
+        // Créer l'en-tête avec titre et bouton de minimisation
+        const header = document.createElement('div');
+        header.style.cssText = `
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 5px;
+            padding-bottom: 8px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        `;
+        
+        const title = document.createElement('div');
+        title.textContent = LABELS.scriptTitle;
+        title.style.fontWeight = 'bold';
+        
+        const minimizeBtn = document.createElement('button');
+        minimizeBtn.textContent = '_';
+        minimizeBtn.style.cssText = `
+            background: none;
+            border: none;
+            color: white;
+            cursor: pointer;
+            font-weight: bold;
+            width: 24px;
+            height: 24px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
+            background-color: rgba(255, 255, 255, 0.2);
+        `;
+        
+        minimizeBtn.addEventListener('click', togglePanelSize);
+        
+        header.appendChild(title);
+        header.appendChild(minimizeBtn);
+
+        // Créer la section d'état actuel
+        const currentStatus = document.createElement('div');
+        currentStatus.id = 'current-status';
+        currentStatus.style.cssText = `
+            padding: 10px;
+            background-color: rgba(255, 255, 255, 0.1);
+            border-radius: 6px;
+            margin-bottom: 5px;
+        `;
+        currentStatus.textContent = LABELS.currentStatusTitle;
+
+        // Créer la section d'historique
+        const historyTitle = document.createElement('div');
+        historyTitle.textContent = LABELS.historyTitle;
+        historyTitle.style.cssText = `
+            font-weight: bold;
+            margin-top: 5px;
+            padding-bottom: 3px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.3);
+        `;
+
+        const historyList = document.createElement('div');
+        historyList.id = 'connection-history';
+        historyList.style.cssText = `
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+        `;
+
+        // Compteur de connexions
+        const counter = document.createElement('div');
+        counter.id = 'connection-counter';
+        counter.style.cssText = `
+            font-weight: bold;
+            text-align: center;
+            margin-top: 5px;
+            padding-top: 5px;
+            border-top: 1px solid rgba(255, 255, 255, 0.3);
+        `;
+        counter.textContent = LABELS.connectionCounter;
+
+        // Assembler le panneau
+        panel.appendChild(header);
+        panel.appendChild(currentStatus);
+        panel.appendChild(historyTitle);
+        panel.appendChild(historyList);
+        panel.appendChild(counter);
+        document.body.appendChild(panel);
+
+        // Ajouter les styles globaux pour les animations
+        const style = document.createElement('style');
+        style.textContent = `
+            @keyframes fadeIn {
+                from { opacity: 0; }
+                to { opacity: 1; }
+            }
+            @keyframes pulse {
+                0% { background-color: rgba(10, 102, 194, 0.9); }
+                50% { background-color: rgba(25, 118, 210, 0.9); }
+                100% { background-color: rgba(10, 102, 194, 0.9); }
+            }
+            .searching {
+                animation: pulse 2s infinite;
+            }
+            .history-item {
+                padding: 8px;
+                border-radius: 4px;
+                background-color: rgba(255, 255, 255, 0.1);
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+            }
+            .connection-name {
+                flex: 1;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+            }
+            .connection-status {
+                margin-left: 10px;
+                font-weight: bold;
+            }
+            .minimized {
+                width: 50px !important;
+                height: 30px !important;
+                overflow: hidden;
+                padding: 5px !important;
+            }
+            .minimized * {
+                display: none;
+            }
+            .minimized #linkedin-connect-status-panel-header {
+                display: flex;
+            }
+        `;
+        document.head.appendChild(style);
+
+        return panel;
+    }
+
+    // Fonction pour basculer entre panneau minimisé et normal
+    function togglePanelSize() {
+        const panel = document.getElementById('linkedin-connect-status-panel');
+        if (panel) {
+            if (panel.classList.contains('minimized')) {
+                panel.classList.remove('minimized');
+            } else {
+                panel.classList.add('minimized');
+            }
+        }
+    }
+
+    // Mettre à jour le statut actuel
+    function updateCurrentStatus(message, isSearching = false) {
+        const statusElement = document.getElementById('current-status');
+        if (statusElement) {
+            statusElement.textContent = message;
+            
+            if (isSearching) {
+                statusElement.classList.add('searching');
+            } else {
+                statusElement.classList.remove('searching');
+            }
+        }
+    }
+
+    // Ajouter une entrée à l'historique des connexions
+    function addToHistory(name, status = LABELS.connectionInProgress, profileInfo = '') {
+        const historyList = document.getElementById('connection-history');
+        if (!historyList) return;
+
+        // Créer l'élément d'historique
+        const historyItem = document.createElement('div');
+        historyItem.classList.add('history-item');
+        historyItem.setAttribute('data-name', name);
+        
+        const nameElement = document.createElement('div');
+        nameElement.classList.add('connection-name');
+        nameElement.title = name + (profileInfo ? ` (${profileInfo})` : '');
+        nameElement.textContent = name;
+        
+        const statusElement = document.createElement('div');
+        statusElement.classList.add('connection-status');
+        
+        if (status === LABELS.connectionSuccess) {
+            statusElement.textContent = '✅';
+            statusElement.style.color = '#4CAF50';
+        } else if (status === LABELS.connectionFailed) {
+            statusElement.textContent = '❌';
+            statusElement.style.color = '#F44336';
+        } else {
+            statusElement.textContent = '⏳';
+            statusElement.style.color = '#FFC107';
+        }
+        
+        historyItem.appendChild(nameElement);
+        historyItem.appendChild(statusElement);
+        
+        // Ajouter au début de la liste
+        historyList.insertBefore(historyItem, historyList.firstChild);
+        
+        // Mettre à jour le tableau d'historique
+        connectionHistory.push({
+            name: name,
+            status: status,
+            profileInfo: profileInfo,
+            timestamp: new Date()
+        });
+        
+        // Mettre à jour le compteur
+        updateConnectionCounter();
+        
+        return historyItem;
+    }
+
+    // Mettre à jour le statut d'une connexion existante
+    function updateConnectionStatus(name, newStatus) {
+        const historyList = document.getElementById('connection-history');
+        if (!historyList) return;
+        
+        // Trouver l'élément correspondant
+        const items = historyList.querySelectorAll('.history-item');
+        
+        for (const item of items) {
+            if (item.getAttribute('data-name') === name) {
+                const statusElement = item.querySelector('.connection-status');
+                
+                if (newStatus === LABELS.connectionSuccess) {
+                    statusElement.textContent = '✅';
+                    statusElement.style.color = '#4CAF50';
+                } else if (newStatus === LABELS.connectionFailed) {
+                    statusElement.textContent = '❌';
+                    statusElement.style.color = '#F44336';
+                }
+                
+                // Mettre à jour l'historique
+                for (const entry of connectionHistory) {
+                    if (entry.name === name) {
+                        entry.status = newStatus;
+                        break;
+                    }
+                }
+                
+                // Mettre à jour le compteur
+                updateConnectionCounter();
+                break;
+            }
+        }
+    }
+
+    // Mettre à jour le compteur de connexions
+    function updateConnectionCounter() {
+        const counterElement = document.getElementById('connection-counter');
+        if (!counterElement) return;
+        
+        const successfulConnections = connectionHistory.filter(entry => entry.status === LABELS.connectionSuccess).length;
+        counterElement.textContent = LABELS.connectionCounterTemplate
+            .replace('{success}', successfulConnections)
+            .replace('{total}', connectionHistory.length);
+    }
+
+    // Fonction pour extraire le nom d'un profil
+    function extractProfileName(element) {
+        if (!element) {
+            return `Profil #${Math.floor(Math.random() * 10000)}`;
+        }
+        
+        // Approche 1: Rechercher des sélecteurs spécifiques à LinkedIn connus pour contenir des noms
+        const specificSelectors = [
+            'span.artdeco-entity-lockup__title span', // Nom dans les résultats de recherche
+            'span.artdeco-entity-lockup__title', // Variante
+            'span.entity-result__title-text a', // Variante résultats de recherche
+            'span.entity-result__title-text', // Variante
+            'a.app-aware-link[href*="/in/"]', // Liens de profil
+            'h1.text-heading-xlarge', // Nom sur la page de profil
+            'span.feed-shared-actor__name', // Nom dans le flux
+            'a.feed-shared-actor__meta-link', // Variante flux
+            '.update-components-actor__name', // Nom dans les mises à jour
+            'a.update-components-actor__meta-link', // Variante mises à jour
+            'span.message-item__content span.msg-conversation-card__participant-names', // Messages
+            '.artdeco-entity-lockup__subtitle', // Sous-titres (fonction/poste)
+            '.pv-top-card--list li' // Éléments de la carte de profil
+        ];
+        
+        for (const selector of specificSelectors) {
+            const elements = element.querySelectorAll(selector);
+            for (const elem of elements) {
+                const text = elem.textContent.trim();
+                // Vérification plus stricte pour filtrer les faux positifs
+                if (text && text.length > 3 && text.length < 50 && 
+                    !text.includes('Se connecter') && 
+                    !text.includes('en ligne') && 
+                    !text.includes('hors ligne') &&
+                    !text.includes('statut') && 
+                    !text.includes('status') &&
+                    /[A-Za-zÀ-ÿ\s-]{4,40}/.test(text)) {
+                    return text;
+                }
+            }
+        }
+        
+        // Approche 2: Recherche dans le texte par motifs courants de noms
+        const fullText = getVisibleText(element);
+        
+        // Trouver des motifs de noms courants (2 mots commençant par des majuscules)
+        const nameMatches = fullText.match(/[A-Z][a-zÀ-ÿ]{1,20}\s+[A-Z][a-zÀ-ÿ]{1,20}/g);
+        if (nameMatches && nameMatches.length > 0) {
+            // Filtrer pour éviter les faux positifs
+            for (const match of nameMatches) {
+                if (!match.toLowerCase().includes('linkedin') && 
+                    !match.toLowerCase().includes('statut') && 
+                    !match.toLowerCase().includes('status') && 
+                    !match.toLowerCase().includes('en ligne') && 
+                    !match.toLowerCase().includes('hors ligne')) {
+                    return match;
+                }
+            }
+        }
+        
+        // Approche 3: Rechercher des motifs de titres avec mots-clés pertinents
+        const titleMatches = fullText.match(/([A-Z][a-zÀ-ÿ\s]{1,30})(manager|directeur|directrice|director)/i);
+        if (titleMatches && titleMatches[1]) {
+            return titleMatches[1].trim();
+        }
+        
+        // Approche 4: Essayer de trouver un texte qui ressemble à un nom dans les éléments
+        const allElements = element.querySelectorAll('*');
+        for (const elem of allElements) {
+            const text = elem.textContent.trim();
+            if (text && text.length > 3 && text.length < 40 && 
+                /^[A-Z][a-zÀ-ÿ]+(\s[A-Z][a-zÀ-ÿ]+)+$/.test(text) && 
+                !text.includes('Se connecter') && 
+                !text.includes('en ligne') && 
+                !text.includes('hors ligne') &&
+                !text.includes('statut')) {
+                return text;
+            }
+        }
+        
+        // En dernier recours, créer un identifiant unique avec la partie d'un mot-clé trouvé
+        for (const keyword of ['hotel', 'manager', 'directeur', 'hospitality']) {
+            if (fullText.toLowerCase().includes(keyword)) {
+                return LABELS.defaultProfileWithKeyword
+                    .replace('{keyword}', keyword)
+                    .replace('{id}', Math.floor(Math.random() * 1000));
+            }
+        }
+        
+        // Vraiment en dernier recours
+        return LABELS.defaultProfileName.replace('{id}', Math.floor(Math.random() * 10000));
+    }
+
+    // Fonction pour vérifier si le texte contient l'une des paires de mots-clés
+    function containsKeywordPairs(text) {
+        if (!text) return false;
+
+        const lowerText = text.toLowerCase();
+
+        // Vérifier d'abord les mots-clés individuels qui qualifient automatiquement
+        for (const keyword of INDIVIDUAL_KEYWORDS) {
+            if (lowerText.includes(keyword.toLowerCase())) {
+                return {
+                    matches: true,
+                    matchedTerms: [keyword]
+                };
+            }
+        }
+
+        // Vérifier les paires (les deux mots doivent être présents)
+        for (const pair of KEYWORD_PAIRS) {
+            const word1 = pair[0].toLowerCase();
+            const word2 = pair[1].toLowerCase();
+
+            if (lowerText.includes(word1) && lowerText.includes(word2)) {
+                return {
+                    matches: true,
+                    matchedTerms: pair
+                };
+            }
+        }
+
+        return {
+            matches: false,
+            matchedTerms: []
+        };
+    }
+
+    // Fonction pour extraire le texte visible d'un élément (sans les balises HTML)
+    function getVisibleText(element) {
+        // Cloner l'élément pour ne pas modifier la page
+        const clone = element.cloneNode(true);
+
+        // Retirer les éléments script et style
+        const scripts = clone.querySelectorAll('script, style');
+        scripts.forEach(script => script.remove());
+
+        // Obtenir le texte visible
+        return clone.textContent.trim();
+    }
+
+    // Fonction pour trouver les boutons de connexion avec vérification de contexte
+    function findEligibleConnectButtons() {
+        // Mettre à jour le statut
+        updateCurrentStatus(LABELS.statusSearching, true);
+        
+        // Trouver tous les boutons "Se connecter"
+        const connectButtons = document.querySelectorAll('button span.artdeco-button__text');
+        const eligibleButtons = [];
+
+        connectButtons.forEach(span => {
+            if (span.textContent.trim() === LABELS.connectButtonText) {
+                const button = span.closest('button');
+                if (!button) return;
+
+                // Remonter dans le DOM pour trouver un contexte plus large
+                let container = button.parentElement;
+                let depth = 0;
+                let contextText = "";
+
+                // Remonter jusqu'à 5 niveaux pour trouver un conteneur significatif
+                while (container && depth < 5) {
+                    // Essayer de trouver un élément qui pourrait contenir des informations de profil
+                    if (container.clientWidth > 200 && container.clientHeight > 100) {
+                        contextText = getVisibleText(container);
+                        if (contextText.length > 20) break;
+                    }
+                    container = container.parentElement;
+                    depth++;
+                }
+
+                // Si aucun contexte trouvé, essayer de prendre le texte avant le bouton
+                if (!contextText || contextText.length < 20) {
+                    // Prendre le conteneur parent du bouton
+                    const buttonParent = button.parentElement;
+                    if (buttonParent && buttonParent.parentElement) {
+                        const siblings = Array.from(buttonParent.parentElement.children);
+                        const buttonIndex = siblings.indexOf(buttonParent);
+
+                        // Extraire le texte des éléments avant le bouton
+                        let previousText = "";
+                        for (let i = 0; i < buttonIndex; i++) {
+                            previousText += getVisibleText(siblings[i]) + " ";
+                        }
+
+                        if (previousText.trim()) {
+                            contextText = previousText.trim();
+                        }
+                    }
+                }
+
+                // Vérifier si le texte contient des paires de mots-clés
+                const keywordResult = containsKeywordPairs(contextText);
+
+                // Extraire un extrait du contexte pour les logs (maximum 150 caractères)
+                const contextExtract = contextText.length > 150
+                    ? contextText.substring(0, 147) + "..."
+                    : contextText;
+
+                // Afficher les résultats dans les logs
+                if (keywordResult.matches) {
+                    // Extraire le nom du profil
+                    const profileName = extractProfileName(container || buttonParent) || "Profil inconnu";
+                    
+                    log(`✓ ÉLIGIBLE - Nom: "${profileName}" - Mots trouvés: "${keywordResult.matchedTerms.join('" et "')}" - Contexte: "${contextExtract}"`);
+
+                    eligibleButtons.push({
+                        button: button,
+                        context: contextExtract,
+                        matchedTerms: keywordResult.matchedTerms,
+                        profileName: profileName
+                    });
+                } else {
+                    log(`✗ NON ÉLIGIBLE - Contexte: "${contextExtract}"`);
+                }
+            }
+        });
+
+        // Mettre à jour le statut
+        if (eligibleButtons.length > 0) {
+            updateCurrentStatus(LABELS.statusFoundProfiles.replace('{count}', eligibleButtons.length), false);
+        } else {
+            updateCurrentStatus(LABELS.statusNoProfileFound, false);
+        }
+        
+        log(`Trouvé ${eligibleButtons.length} boutons éligibles.`);
+        return eligibleButtons;
+    }
+
+    // Fonction pour trouver le bouton "Envoyer sans note" dans la popup
+    function findSendWithoutNoteButton() {
+        // Méthodes multiples pour trouver le bouton dans la popup
+
+        // 1. Par aria-label
+        let button = document.querySelector(`button[aria-label="${LABELS.sendWithoutNoteButton}"]`);
+        if (button) {
+            return button;
+        }
+
+        // 2. Par texte exact du bouton
+        const buttonsByText = Array.from(document.querySelectorAll('button span.artdeco-button__text'))
+            .filter(span => span.textContent.trim() === LABELS.sendWithoutNoteButton)
+            .map(span => span.closest('button'));
+
+        if (buttonsByText.length > 0) {
+            return buttonsByText[0];
+        }
+
+        // 3. Par type de bouton et classe (bouton principal dans une popup récemment ouverte)
+        const primaryButtons = document.querySelectorAll('button.artdeco-button--primary');
+        for (const btn of primaryButtons) {
+            const spanText = btn.querySelector('span.artdeco-button__text');
+            if (spanText && spanText.textContent.includes('Envoyer')) {
+                return btn;
+            }
+        }
+
+        // 4. Chercher dans les dialogues modaux récemment apparus
+        const modals = document.querySelectorAll('div[role="dialog"]');
+        for (const modal of modals) {
+            const modalButtons = modal.querySelectorAll('button');
+            for (const btn of modalButtons) {
+                const spanText = btn.querySelector('span');
+                if (spanText && (spanText.textContent.includes('Envoyer') ||
+                                 spanText.textContent.includes('Confirmer') ||
+                                 spanText.textContent.includes('note'))) {
+                    return btn;
+                }
+            }
+        }
+
+        // Aucun bouton trouvé
+        return null;
+    }
+
+    // Fonction principale pour gérer un cycle complet de connexion
+    function processNextConnection() {
+        // Si déjà en cours de connexion, ne rien faire
+        if (isConnectionInProgress) {
+            return;
+        }
+
+        const eligibleButtons = findEligibleConnectButtons();
+
+        // S'il n'y a pas de boutons éligibles, ne rien faire
+        if (eligibleButtons.length === 0) {
+            log(`Aucun bouton "${LABELS.connectButtonText}" éligible trouvé.`);
+            return;
+        }
+
+        // Marquer comme en cours
+        isConnectionInProgress = true;
+
+        // Prendre le premier bouton éligible
+        const { button, context, matchedTerms, profileName } = eligibleButtons[0];
+
+        // Ajouter à l'historique avec statut "En cours"
+        addToHistory(profileName, LABELS.connectionInProgress, matchedTerms.join(' & '));
+
+        // Mettre à jour le statut
+        updateCurrentStatus(LABELS.statusConnecting.replace('{name}', profileName), true);
+
+        log(`▶ ACTION: Clic sur "${LABELS.connectButtonText}" pour ${profileName} avec "${matchedTerms.join('" et "')}"`);
+
+        // Cliquer sur le bouton "Se connecter" après un délai aléatoire pour éviter la détection
+        const randomDelay = Math.floor(Math.random() * 1000) + 1000; // Entre 1 et 2 secondes
+
+        setTimeout(() => {
+            // Cliquer sur le bouton "Se connecter"
+            button.click();
+
+            // Mettre à jour le statut
+            updateCurrentStatus(LABELS.statusLookingForPopup.replace('{name}', profileName), true);
+
+            // Attendre et vérifier plusieurs fois si la popup apparaît
+            let checkCount = 0;
+            const maxChecks = 5; // Vérifier jusqu'à 5 fois
+
+            const checkForPopup = () => {
+                checkCount++;
+                const sendButton = findSendWithoutNoteButton();
+
+                if (sendButton) {
+                    updateCurrentStatus(LABELS.statusSendingConnection.replace('{name}', profileName), true);
+                    log(`▶ ACTION: Popup trouvée. Clic sur "${LABELS.sendWithoutNoteButton}"`);
+
+                    setTimeout(() => {
+                        sendButton.click();
+
+                        // Marquer comme réussi dans l'historique
+                        updateConnectionStatus(profileName, LABELS.connectionSuccess);
+                        
+                        // Mettre à jour le statut
+                        updateCurrentStatus(LABELS.statusConnectionSent.replace('{name}', profileName), false);
+
+                        // Terminer le processus et réinitialiser le statut après un délai
+                        setTimeout(() => {
+                            isConnectionInProgress = false;
+                            log('✓ SUCCÈS: Connexion envoyée à ' + profileName);
+                        }, 2000);
+                    }, 500); // Petit délai avant de cliquer sur le bouton
+                }
+                else if (checkCount < maxChecks) {
+                    // Continuer à vérifier si la popup n'est pas encore apparue
+                    setTimeout(checkForPopup, 500);
+                }
+                else {
+                    // Abandonner après plusieurs tentatives
+                    log('✗ ÉCHEC: Popup non trouvée pour ' + profileName);
+                    updateCurrentStatus(LABELS.statusConnectionFailed.replace('{name}', profileName), false);
+                    updateConnectionStatus(profileName, LABELS.connectionFailed);
+                    isConnectionInProgress = false;
+                }
+
+            // Démarrer la vérification après un court délai
+            setTimeout(checkForPopup, 800);
+        }, randomDelay);
+    }
+
+    // Initialiser l'interface utilisateur et démarrer le processus
+    function initialize() {
+        // Créer le panneau de statut
+        createStatusPanel();
+        
+        // Afficher le message de démarrage
+        updateCurrentStatus(LABELS.statusInitializing, false);
+        
+        log('✳ DÉMARRAGE: Automatisation des connexions pour les profils du secteur hôtelier...');
+
+        // Attendre quelques secondes pour le chargement complet
+        setTimeout(() => {
+            // Mettre à jour le statut
+            updateCurrentStatus(LABELS.statusSearching, true);
+            
+            // Démarrer le premier cycle
+            processNextConnection();
+
+            // Répéter toutes les 10 secondes
+            setInterval(() => {
+                if (!isConnectionInProgress) {
+                    processNextConnection();
+                }
+            }, 10000);
+        }, 3000);
+    }
+
+    // Vérifier également après le défilement pour trouver de nouveaux boutons
+    let scrollTimeout;
+    window.addEventListener('scroll', () => {
+        clearTimeout(scrollTimeout);
+        scrollTimeout = setTimeout(() => {
+            if (!isConnectionInProgress) {
+                log('⟳ DÉFILEMENT: Recherche de nouveaux boutons...');
+                processNextConnection();
+            }
+        }, 1000);
+    });
+    
+    // Lancer l'initialisation après le chargement de la page
+    window.addEventListener('load', initialize);
+    
+    // Si la page est déjà chargée, initialiser maintenant
+    if (document.readyState === 'complete') {
+        initialize();
+    }
+})();
