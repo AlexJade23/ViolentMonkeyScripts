@@ -1,8 +1,8 @@
 // ==UserScript==
-// @name         Automatisation de connexions LinkedIn - Paramétrable
+// @name         Automatisation de connexions LinkedIn - Hotel Manager Paramétrable
 // @namespace    http://tampermonkey.net/
 // @version      1.0
-// @description  Clique sur les boutons "Se connecter" pour les profils avec indicateur visuel et historique
+// @description  Clique sur les boutons "Se connecter" pour les profils du secteur hôtelier avec indicateur visuel et historique
 // @author       Alex Jade
 // @match        https://www.linkedin.com/*
 // @grant        none
@@ -11,45 +11,9 @@
 (function() {
     'use strict';
 
-    // Configuration des libellés pour faciliter la traduction
-    const LABELS = {
-        // Libellés de l'interface
-        scriptTitle: 'LinkedIn Auto Connect',
-        currentStatusTitle: 'Initialisation...',
-        historyTitle: 'Historique des connexions',
-        connectionCounter: 'Connexions: 0',
-        connectionCounterTemplate: 'Connexions réussies: {success}/{total}',
-        
-        // Statuts de connexion
-        statusSearching: 'Recherche de profils hôteliers...',
-        statusNoProfileFound: 'Aucun profil hôtelier trouvé. En attente...',
-        statusFoundProfiles: 'Trouvé {count} profil(s) hôtelier(s) éligible(s)',
-        statusConnecting: 'Connexion en cours avec: {name}',
-        statusLookingForPopup: 'Recherche de la popup de confirmation pour: {name}...',
-        statusSendingConnection: 'Envoi de la connexion à: {name}...',
-        statusConnectionSent: 'Connexion envoyée à: {name}. En attente de la prochaine...',
-        statusConnectionFailed: 'Échec de connexion avec: {name}. Passage à la suivante...',
-        statusInitializing: 'Initialisation du script de connexion LinkedIn...',
-        
-        // États des connexions
-        connectionInProgress: 'En cours',
-        connectionSuccess: 'Succès',
-        connectionFailed: 'Échec',
-        
-        // Bouton "Se connecter" à rechercher sur LinkedIn
-        connectButtonText: 'Se connecter',
-        
-        // Libellés de popup
-        sendWithoutNoteButton: 'Envoyer sans note',
-        
-        // Identifiants par défaut
-        defaultProfileName: 'Profil #{id}',
-        defaultProfileWithKeyword: 'Profil {keyword} #{id}'
-    };
-    
     // Variable pour suivre si un processus de connexion est en cours
     let isConnectionInProgress = false;
-    
+
     // Tableau pour stocker l'historique des connexions
     let connectionHistory = [];
 
@@ -81,6 +45,51 @@
         'directeur général hôtel',
         'hospitality director'
     ];
+
+    const MOTCLE_CONTENU = ['hotel', 'manager', 'directeur', 'hospitality'];
+
+  // Objet de traduction centralisé (à placer après la déclaration des KEYWORD_PAIRS)
+const TRANSLATIONS = {
+    // Titres et en-têtes
+    scriptTitle: 'LinkedIn Auto Connect',
+    historyTitle: 'Historique des connexions',
+    initializationMessage: 'Initialisation...',
+
+    // Statuts
+    statusInitializing: 'Initialisation du script de connexion LinkedIn...',
+    statusSearching: 'Recherche de profils...',
+    statusNoProfilesFound: 'Aucun profil trouvé. En attente...',
+    statusFoundProfiles: (count) => `Trouvé ${count} profil(s) éligible(s)`,
+    statusConnecting: (name) => `Connexion en cours avec: ${name}`,
+    statusLookingForPopup: (name) => `Recherche de la popup de confirmation pour: ${name}...`,
+    statusSendingConnection: (name) => `Envoi de la connexion à: ${name}...`,
+    statusConnectionSent: (name) => `Connexion envoyée à: ${name}. En attente de la prochaine...`,
+    statusConnectionFailed: (name) => `Échec de connexion avec: ${name}. Passage à la suivante...`,
+
+    // Compteurs
+    connectionsCounter: (success, total) => `Connexions réussies: ${success}/${total}`,
+
+    // États des connexions
+    connectionStatusPending: 'En cours',
+    connectionStatusSuccess: 'Succès',
+    connectionStatusFailure: 'Échec',
+
+    // Boutons LinkedIn à rechercher
+    connectButtonText: 'Se connecter',
+    sendWithoutNoteButtonText: 'Envoyer sans note',
+
+    // Messages de log
+    logStarting: '✳ DÉMARRAGE: Automatisation des connexions pour les profils...',
+    logNoEligibleButtons: 'Aucun bouton "Se connecter" éligible trouvé.',
+    logEligible: (name, terms, context) => `✓ ÉLIGIBLE - Nom: "${name}" - Mots trouvés: "${terms}" - Contexte: "${context}"`,
+    logNotEligible: (context) => `✗ NON ÉLIGIBLE - Contexte: "${context}"`,
+    logButtonsFound: (count) => `Trouvé ${count} boutons éligibles.`,
+    logClickConnect: (name, terms) => `▶ ACTION: Clic sur "Se connecter" pour ${name} avec "${terms}"`,
+    logPopupFound: '▶ ACTION: Popup trouvée. Clic sur "Envoyer sans note"',
+    logPopupNotFound: (name) => `✗ ÉCHEC: Popup non trouvée pour ${name}`,
+    logSuccess: (name) => `✓ SUCCÈS: Connexion envoyée à ${name}`,
+    logScroll: '⟳ DÉFILEMENT: Recherche de nouveaux boutons...'
+};
 
     // Log amélioré avec horodatage
     function log(message) {
@@ -128,11 +137,11 @@
             padding-bottom: 8px;
             border-bottom: 1px solid rgba(255, 255, 255, 0.3);
         `;
-        
+
         const title = document.createElement('div');
-        title.textContent = LABELS.scriptTitle;
+        title.textContent = TRANSLATIONS.scriptTitle; //'LinkedIn Auto Connect';
         title.style.fontWeight = 'bold';
-        
+
         const minimizeBtn = document.createElement('button');
         minimizeBtn.textContent = '_';
         minimizeBtn.style.cssText = `
@@ -149,9 +158,9 @@
             border-radius: 50%;
             background-color: rgba(255, 255, 255, 0.2);
         `;
-        
+
         minimizeBtn.addEventListener('click', togglePanelSize);
-        
+
         header.appendChild(title);
         header.appendChild(minimizeBtn);
 
@@ -164,11 +173,11 @@
             border-radius: 6px;
             margin-bottom: 5px;
         `;
-        currentStatus.textContent = LABELS.currentStatusTitle;
+        currentStatus.textContent = TRANSLATIONS.initializationMessage; //'Initialisation...';
 
         // Créer la section d'historique
         const historyTitle = document.createElement('div');
-        historyTitle.textContent = LABELS.historyTitle;
+        historyTitle.textContent = TRANSLATIONS.historyTitle; // 'Historique des connexions';
         historyTitle.style.cssText = `
             font-weight: bold;
             margin-top: 5px;
@@ -196,7 +205,7 @@
             padding-top: 5px;
             border-top: 1px solid rgba(255, 255, 255, 0.3);
         `;
-        counter.textContent = LABELS.connectionCounter;
+        counter.textContent = 'Connexions: 0';
 
         // Assembler le panneau
         panel.appendChild(header);
@@ -274,7 +283,7 @@
         const statusElement = document.getElementById('current-status');
         if (statusElement) {
             statusElement.textContent = message;
-            
+
             if (isSearching) {
                 statusElement.classList.add('searching');
             } else {
@@ -284,7 +293,7 @@
     }
 
     // Ajouter une entrée à l'historique des connexions
-    function addToHistory(name, status = LABELS.connectionInProgress, profileInfo = '') {
+    function addToHistory(name, status = TRANSLATIONS.connectionStatusPending, profileInfo = '') {   //'En cours'
         const historyList = document.getElementById('connection-history');
         if (!historyList) return;
 
@@ -292,32 +301,32 @@
         const historyItem = document.createElement('div');
         historyItem.classList.add('history-item');
         historyItem.setAttribute('data-name', name);
-        
+
         const nameElement = document.createElement('div');
         nameElement.classList.add('connection-name');
         nameElement.title = name + (profileInfo ? ` (${profileInfo})` : '');
         nameElement.textContent = name;
-        
+
         const statusElement = document.createElement('div');
         statusElement.classList.add('connection-status');
-        
-        if (status === LABELS.connectionSuccess) {
+
+        if (status === TRANSLATIONS.connectionStatusSuccess) { //'Succès'
             statusElement.textContent = '✅';
             statusElement.style.color = '#4CAF50';
-        } else if (status === LABELS.connectionFailed) {
+        } else if (status === TRANSLATIONS.connectionStatusFailure) { //'Échec'
             statusElement.textContent = '❌';
             statusElement.style.color = '#F44336';
         } else {
             statusElement.textContent = '⏳';
             statusElement.style.color = '#FFC107';
         }
-        
+
         historyItem.appendChild(nameElement);
         historyItem.appendChild(statusElement);
-        
+
         // Ajouter au début de la liste
         historyList.insertBefore(historyItem, historyList.firstChild);
-        
+
         // Mettre à jour le tableau d'historique
         connectionHistory.push({
             name: name,
@@ -325,10 +334,10 @@
             profileInfo: profileInfo,
             timestamp: new Date()
         });
-        
+
         // Mettre à jour le compteur
         updateConnectionCounter();
-        
+
         return historyItem;
     }
 
@@ -336,22 +345,22 @@
     function updateConnectionStatus(name, newStatus) {
         const historyList = document.getElementById('connection-history');
         if (!historyList) return;
-        
+
         // Trouver l'élément correspondant
         const items = historyList.querySelectorAll('.history-item');
-        
+
         for (const item of items) {
             if (item.getAttribute('data-name') === name) {
                 const statusElement = item.querySelector('.connection-status');
-                
-                if (newStatus === LABELS.connectionSuccess) {
+
+                if (newStatus === 'Succès') {
                     statusElement.textContent = '✅';
                     statusElement.style.color = '#4CAF50';
-                } else if (newStatus === LABELS.connectionFailed) {
+                } else if (newStatus === 'Échec') {
                     statusElement.textContent = '❌';
                     statusElement.style.color = '#F44336';
                 }
-                
+
                 // Mettre à jour l'historique
                 for (const entry of connectionHistory) {
                     if (entry.name === name) {
@@ -359,7 +368,7 @@
                         break;
                     }
                 }
-                
+
                 // Mettre à jour le compteur
                 updateConnectionCounter();
                 break;
@@ -367,15 +376,13 @@
         }
     }
 
-    // Mettre à jour le compteur de connexions
+    // Mettre à jour le compteur de connexions  // 'Succès'
     function updateConnectionCounter() {
         const counterElement = document.getElementById('connection-counter');
         if (!counterElement) return;
-        
-        const successfulConnections = connectionHistory.filter(entry => entry.status === LABELS.connectionSuccess).length;
-        counterElement.textContent = LABELS.connectionCounterTemplate
-            .replace('{success}', successfulConnections)
-            .replace('{total}', connectionHistory.length);
+
+        const successfulConnections = connectionHistory.filter(entry => entry.status === TRANSLATIONS.connectionStatusSuccess).length;
+        counterElement.textContent = TRANSLATIONS.connectionsCounter(successfulConnections, connectionHistory.length); //`Connexions réussies: ${successfulConnections}/${connectionHistory.length}`;
     }
 
     // Fonction pour extraire le nom d'un profil
@@ -383,7 +390,7 @@
         if (!element) {
             return `Profil #${Math.floor(Math.random() * 10000)}`;
         }
-        
+
         // Approche 1: Rechercher des sélecteurs spécifiques à LinkedIn connus pour contenir des noms
         const specificSelectors = [
             'span.artdeco-entity-lockup__title span', // Nom dans les résultats de recherche
@@ -400,73 +407,71 @@
             '.artdeco-entity-lockup__subtitle', // Sous-titres (fonction/poste)
             '.pv-top-card--list li' // Éléments de la carte de profil
         ];
-        
+
         for (const selector of specificSelectors) {
             const elements = element.querySelectorAll(selector);
             for (const elem of elements) {
                 const text = elem.textContent.trim();
                 // Vérification plus stricte pour filtrer les faux positifs
-                if (text && text.length > 3 && text.length < 50 && 
-                    !text.includes('Se connecter') && 
-                    !text.includes('en ligne') && 
+                if (text && text.length > 3 && text.length < 50 &&
+                    !text.includes('Se connecter') &&
+                    !text.includes('en ligne') &&
                     !text.includes('hors ligne') &&
-                    !text.includes('statut') && 
+                    !text.includes('statut') &&
                     !text.includes('status') &&
                     /[A-Za-zÀ-ÿ\s-]{4,40}/.test(text)) {
                     return text;
                 }
             }
         }
-        
+
         // Approche 2: Recherche dans le texte par motifs courants de noms
         const fullText = getVisibleText(element);
-        
+
         // Trouver des motifs de noms courants (2 mots commençant par des majuscules)
         const nameMatches = fullText.match(/[A-Z][a-zÀ-ÿ]{1,20}\s+[A-Z][a-zÀ-ÿ]{1,20}/g);
         if (nameMatches && nameMatches.length > 0) {
             // Filtrer pour éviter les faux positifs
             for (const match of nameMatches) {
-                if (!match.toLowerCase().includes('linkedin') && 
-                    !match.toLowerCase().includes('statut') && 
-                    !match.toLowerCase().includes('status') && 
-                    !match.toLowerCase().includes('en ligne') && 
+                if (!match.toLowerCase().includes('linkedin') &&
+                    !match.toLowerCase().includes('statut') &&
+                    !match.toLowerCase().includes('status') &&
+                    !match.toLowerCase().includes('en ligne') &&
                     !match.toLowerCase().includes('hors ligne')) {
                     return match;
                 }
             }
         }
-        
+
         // Approche 3: Rechercher des motifs de titres avec mots-clés pertinents
         const titleMatches = fullText.match(/([A-Z][a-zÀ-ÿ\s]{1,30})(manager|directeur|directrice|director)/i);
         if (titleMatches && titleMatches[1]) {
             return titleMatches[1].trim();
         }
-        
+
         // Approche 4: Essayer de trouver un texte qui ressemble à un nom dans les éléments
         const allElements = element.querySelectorAll('*');
         for (const elem of allElements) {
             const text = elem.textContent.trim();
-            if (text && text.length > 3 && text.length < 40 && 
-                /^[A-Z][a-zÀ-ÿ]+(\s[A-Z][a-zÀ-ÿ]+)+$/.test(text) && 
-                !text.includes('Se connecter') && 
-                !text.includes('en ligne') && 
+            if (text && text.length > 3 && text.length < 40 &&
+                /^[A-Z][a-zÀ-ÿ]+(\s[A-Z][a-zÀ-ÿ]+)+$/.test(text) &&
+                !text.includes('Se connecter') &&
+                !text.includes('en ligne') &&
                 !text.includes('hors ligne') &&
                 !text.includes('statut')) {
                 return text;
             }
         }
-        
-        // En dernier recours, créer un identifiant unique avec la partie d'un mot-clé trouvé
-        for (const keyword of ['hotel', 'manager', 'directeur', 'hospitality']) {
+
+        // En dernier recours, créer un identifiant unique avec la partie d'un mot-clé trouvé // ['hotel', 'manager', 'directeur', 'hospitality']
+        for (const keyword of MOTCLE_CONTENU) {
             if (fullText.toLowerCase().includes(keyword)) {
-                return LABELS.defaultProfileWithKeyword
-                    .replace('{keyword}', keyword)
-                    .replace('{id}', Math.floor(Math.random() * 1000));
+                return `Profil ${keyword} #${Math.floor(Math.random() * 1000)}`;
             }
         }
-        
+
         // Vraiment en dernier recours
-        return LABELS.defaultProfileName.replace('{id}', Math.floor(Math.random() * 10000));
+        return `Profil #${Math.floor(Math.random() * 10000)}`;
     }
 
     // Fonction pour vérifier si le texte contient l'une des paires de mots-clés
@@ -520,14 +525,14 @@
     // Fonction pour trouver les boutons de connexion avec vérification de contexte
     function findEligibleConnectButtons() {
         // Mettre à jour le statut
-        updateCurrentStatus(LABELS.statusSearching, true);
-        
+        updateCurrentStatus('Recherche de profils hôteliers...', true);
+
         // Trouver tous les boutons "Se connecter"
         const connectButtons = document.querySelectorAll('button span.artdeco-button__text');
         const eligibleButtons = [];
 
         connectButtons.forEach(span => {
-            if (span.textContent.trim() === LABELS.connectButtonText) {
+            if (span.textContent.trim() === TRANSLATIONS.connectButtonText) { //'Se connecter'
                 const button = span.closest('button');
                 if (!button) return;
 
@@ -579,7 +584,7 @@
                 if (keywordResult.matches) {
                     // Extraire le nom du profil
                     const profileName = extractProfileName(container || buttonParent) || "Profil inconnu";
-                    
+
                     log(`✓ ÉLIGIBLE - Nom: "${profileName}" - Mots trouvés: "${keywordResult.matchedTerms.join('" et "')}" - Contexte: "${contextExtract}"`);
 
                     eligibleButtons.push({
@@ -596,11 +601,11 @@
 
         // Mettre à jour le statut
         if (eligibleButtons.length > 0) {
-            updateCurrentStatus(LABELS.statusFoundProfiles.replace('{count}', eligibleButtons.length), false);
+            updateCurrentStatus(`Trouvé ${eligibleButtons.length} profil(s) hôtelier(s) éligible(s)`, false);
         } else {
-            updateCurrentStatus(LABELS.statusNoProfileFound, false);
+            updateCurrentStatus('Aucun profil hôtelier trouvé. En attente...', false);
         }
-        
+
         log(`Trouvé ${eligibleButtons.length} boutons éligibles.`);
         return eligibleButtons;
     }
@@ -610,14 +615,15 @@
         // Méthodes multiples pour trouver le bouton dans la popup
 
         // 1. Par aria-label
-        let button = document.querySelector(`button[aria-label="${LABELS.sendWithoutNoteButton}"]`);
+        let button = document.querySelector(`button[aria-label="${TRANSLATIONS.sendWithoutNoteButtonText}"]`);
+        //let button = document.querySelector('button[aria-label="Envoyer sans note"]');
         if (button) {
             return button;
         }
 
-        // 2. Par texte exact du bouton
+        // 2. Par texte exact du bouton  // 'Envoyer sans note'
         const buttonsByText = Array.from(document.querySelectorAll('button span.artdeco-button__text'))
-            .filter(span => span.textContent.trim() === LABELS.sendWithoutNoteButton)
+            .filter(span => span.textContent.trim() === TRANSLATIONS.sendWithoutNoteButtonText)
             .map(span => span.closest('button'));
 
         if (buttonsByText.length > 0) {
@@ -662,7 +668,7 @@
 
         // S'il n'y a pas de boutons éligibles, ne rien faire
         if (eligibleButtons.length === 0) {
-            log(`Aucun bouton "${LABELS.connectButtonText}" éligible trouvé.`);
+            log('Aucun bouton "Se connecter" éligible trouvé.');
             return;
         }
 
@@ -673,22 +679,22 @@
         const { button, context, matchedTerms, profileName } = eligibleButtons[0];
 
         // Ajouter à l'historique avec statut "En cours"
-        addToHistory(profileName, LABELS.connectionInProgress, matchedTerms.join(' & '));
+        addToHistory(profileName, 'En cours', matchedTerms.join(' & '));
 
         // Mettre à jour le statut
-        updateCurrentStatus(LABELS.statusConnecting.replace('{name}', profileName), true);
+        updateCurrentStatus(`Connexion en cours avec: ${profileName}`, true);
 
-        log(`▶ ACTION: Clic sur "${LABELS.connectButtonText}" pour ${profileName} avec "${matchedTerms.join('" et "')}"`);
+        log(`▶ ACTION: Clic sur "Se connecter" pour ${profileName} avec "${matchedTerms.join('" et "')}"`);
 
         // Cliquer sur le bouton "Se connecter" après un délai aléatoire pour éviter la détection
-        const randomDelay = Math.floor(Math.random() * 1000) + 1000; // Entre 1 et 2 secondes
+        const randomDelay = Math.floor(Math.random() * 1000) + 500; // Entre 1 et 2 secondes
 
         setTimeout(() => {
             // Cliquer sur le bouton "Se connecter"
             button.click();
 
             // Mettre à jour le statut
-            updateCurrentStatus(LABELS.statusLookingForPopup.replace('{name}', profileName), true);
+            updateCurrentStatus(`Recherche de la popup de confirmation pour: ${profileName}...`, true);
 
             // Attendre et vérifier plusieurs fois si la popup apparaît
             let checkCount = 0;
@@ -699,17 +705,17 @@
                 const sendButton = findSendWithoutNoteButton();
 
                 if (sendButton) {
-                    updateCurrentStatus(LABELS.statusSendingConnection.replace('{name}', profileName), true);
-                    log(`▶ ACTION: Popup trouvée. Clic sur "${LABELS.sendWithoutNoteButton}"`);
+                    updateCurrentStatus(`Envoi de la connexion à: ${profileName}...`, true);
+                    log('▶ ACTION: Popup trouvée. Clic sur "Envoyer sans note"');
 
                     setTimeout(() => {
                         sendButton.click();
 
                         // Marquer comme réussi dans l'historique
-                        updateConnectionStatus(profileName, LABELS.connectionSuccess);
-                        
+                        updateConnectionStatus(profileName, 'Succès');
+
                         // Mettre à jour le statut
-                        updateCurrentStatus(LABELS.statusConnectionSent.replace('{name}', profileName), false);
+                        updateCurrentStatus(`Connexion envoyée à: ${profileName}. En attente de la prochaine...`, false);
 
                         // Terminer le processus et réinitialiser le statut après un délai
                         setTimeout(() => {
@@ -725,10 +731,11 @@
                 else {
                     // Abandonner après plusieurs tentatives
                     log('✗ ÉCHEC: Popup non trouvée pour ' + profileName);
-                    updateCurrentStatus(LABELS.statusConnectionFailed.replace('{name}', profileName), false);
-                    updateConnectionStatus(profileName, LABELS.connectionFailed);
+                    updateCurrentStatus(`Échec de connexion avec: ${profileName}. Passage à la suivante...`, false);
+                    updateConnectionStatus(profileName, 'Échec');
                     isConnectionInProgress = false;
                 }
+            };
 
             // Démarrer la vérification après un court délai
             setTimeout(checkForPopup, 800);
@@ -739,17 +746,17 @@
     function initialize() {
         // Créer le panneau de statut
         createStatusPanel();
-        
+
         // Afficher le message de démarrage
-        updateCurrentStatus(LABELS.statusInitializing, false);
-        
+        updateCurrentStatus('Initialisation du script de connexion LinkedIn...', false);
+
         log('✳ DÉMARRAGE: Automatisation des connexions pour les profils du secteur hôtelier...');
 
         // Attendre quelques secondes pour le chargement complet
         setTimeout(() => {
             // Mettre à jour le statut
-            updateCurrentStatus(LABELS.statusSearching, true);
-            
+            updateCurrentStatus('Recherche de profils hôteliers...', true);
+
             // Démarrer le premier cycle
             processNextConnection();
 
@@ -758,8 +765,8 @@
                 if (!isConnectionInProgress) {
                     processNextConnection();
                 }
-            }, 10000);
-        }, 3000);
+            }, 2000);
+        }, 2000);
     }
 
     // Vérifier également après le défilement pour trouver de nouveaux boutons
@@ -773,10 +780,10 @@
             }
         }, 1000);
     });
-    
+
     // Lancer l'initialisation après le chargement de la page
     window.addEventListener('load', initialize);
-    
+
     // Si la page est déjà chargée, initialiser maintenant
     if (document.readyState === 'complete') {
         initialize();
